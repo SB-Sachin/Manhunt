@@ -5,7 +5,7 @@ import { subscribeToGame } from '../services/gameService.js'
 
 export default function LobbyScreen() {
   const navigate = useNavigate()
-  const { roomCode, uid, setGame, game } = useGameStore()
+  const { roomCode, uid, setGame } = useGameStore()
   const isHost = useGameStore(selectIsHost)
   const players = useGameStore(selectAllPlayers)
 
@@ -22,56 +22,62 @@ export default function LobbyScreen() {
 
   return (
     <div className="screen screen-padded">
+
+      {/* Header */}
       <div>
         <div className="label">Room Code</div>
-        <div style={{
-          fontSize: 36,
-          fontWeight: 900,
-          letterSpacing: '0.25em',
-          color: 'var(--yellow)',
-        }}>
-          {roomCode}
+        <div className="room-code">{roomCode}</div>
+        <div className="subtitle" style={{ marginTop: 6 }}>
+          Share this code with your friends
         </div>
-        <div className="subtitle" style={{ marginTop: 4 }}>Share this with your friends</div>
       </div>
 
-      <div className="card">
-        <div className="label" style={{ marginBottom: 12 }}>
-          Players ({players.length})
+      <div className="divider" />
+
+      {/* Player list */}
+      <div className="card" style={{ flex: 1 }}>
+        <div className="label" style={{ marginBottom: 4 }}>
+          Players — {players.length} joined
         </div>
         {players.map(p => (
           <div key={p.id} className="player-row">
-            <div className="player-avatar" style={{ background: avatarColor(p.name) }}>
-              {p.name[0].toUpperCase()}
+            <div
+              className="player-avatar"
+              style={{ background: avatarColor(p.name) + '22', border: `2px solid ${avatarColor(p.name)}` }}
+            >
+              <span style={{ color: avatarColor(p.name) }}>{p.name[0].toUpperCase()}</span>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{p.name}</div>
+              <div style={{ fontWeight: 600, fontSize: 15 }}>{p.name}</div>
             </div>
-            {p.isHost && <span className="badge badge-yellow">Host</span>}
-            {p.id === uid && <span className="badge badge-blue">You</span>}
+            <div style={{ display: 'flex', gap: 6 }}>
+              {p.isHost && <span className="badge badge-yellow">Host</span>}
+              {p.id === uid && <span className="badge badge-blue">You</span>}
+            </div>
           </div>
         ))}
       </div>
 
+      {/* CTA */}
       {isHost ? (
-        <div style={{ marginTop: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <button
             className="btn btn-primary"
             disabled={players.length < 2}
             onClick={() => navigate('/setup')}
           >
-            Start Setup →
+            Setup Game →
           </button>
           {players.length < 2 && (
-            <div className="subtitle" style={{ textAlign: 'center', marginTop: 8 }}>
-              Need at least 2 players
-            </div>
+            <p className="subtitle" style={{ textAlign: 'center' }}>
+              Waiting for at least 2 players
+            </p>
           )}
         </div>
       ) : (
-        <div className="card" style={{ textAlign: 'center', marginTop: 'auto' }}>
-          <div className="pulse" style={{ color: 'var(--text-muted)' }}>
-            Waiting for host to start…
+        <div className="card" style={{ textAlign: 'center', padding: '20px' }}>
+          <div className="pulse" style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+            Waiting for host to start the game…
           </div>
         </div>
       )}
@@ -80,7 +86,7 @@ export default function LobbyScreen() {
 }
 
 function avatarColor(name) {
-  const colors = ['#7c3aed','#2563eb','#059669','#d97706','#dc2626','#db2777']
+  const colors = ['#ff3b3b','#448aff','#00e676','#ffd600','#d500f9','#ff9100']
   let hash = 0
   for (const c of name) hash = (hash * 31 + c.charCodeAt(0)) & 0xffffffff
   return colors[Math.abs(hash) % colors.length]

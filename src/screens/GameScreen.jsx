@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectMyRole, selectItPlayers, selectRunners } from '../store/gameStore.js'
 import {
   subscribeToGame, tagPlayer, confirmTag, disputeTag,
-  collectPowerUp, activatePowerUp, useReveal, replenishPowerUps
+  collectPowerUp, activatePowerUp, useReveal, replenishPowerUps,
 } from '../services/gameService.js'
 import { useLocationTracking } from '../hooks/useLocation.js'
 import { distanceMetres, computeClusters, pointInPolygon } from '../utils/geo.js'
@@ -23,18 +23,19 @@ export default function GameScreen() {
   const [tagRequest, setTagRequest] = useState(null)
   const [notification, setNotification] = useState(null)
   const [outOfBounds, setOutOfBounds] = useState(false)
+  const [tagCountdown, setTagCountdown] = useState(5)
 
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
-  const markersRef = useRef({})        // pid → L.circleMarker
-  const powerUpMarkersRef = useRef({}) // spawnId → L.marker
+  const markersRef = useRef({})
+  const powerUpMarkersRef = useRef({})
   const boundaryLayerRef = useRef(null)
   const lastReplenishRef = useRef(Date.now())
   const LRef = useRef(null)
+  const tagTimerRef = useRef(null)
 
   useLocationTracking(roomCode, uid, true)
 
-  // Subscribe to game state
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
     const unsub = subscribeToGame(roomCode, (g) => {
@@ -43,19 +44,28 @@ export default function GameScreen() {
 
       if (g.tagRequest?.targetId === uid && g.tagRequest?.status === 'pending') {
         setTagRequest(g.tagRequest)
-        const t = setTimeout(() => {
-          confirmTag(roomCode, uid, g.tagRequest.taggerId).catch(() => {})
-          setTagRequest(null)
-        }, 5000)
-        return () => clearTimeout(t)
-      } else {
+        setTagCountdown(5)
+        clearInterval(tagTimerRef.current)
+        tagTimerRef.current = setInterval(() => {
+          setTagCountdown(prev => {
+            if (prev <= 1) {
+              clearInterval(tagTimerRef.current)
+              confirmTag(roomCode, uid, g.tagRequest.taggerId).catch(() => {})
+              setTagRequest(null)
+              return 5
+            }
+            return prev - 1
+          })
+        }, 1000)
+      } else if (!g.tagRequest) {
         setTagRequest(null)
+        clearInterval(tagTimerRef.current)
       }
     })
-    return unsub
+    return () => { unsub(); clearInterval(tagTimerRef.current) }
   }, [roomCode])
 
-  // Init Leaflet map
+  // Init Leaflet
   useEffect(() => {
     if (mapRef.current) return
     import('leaflet').then((L) => {
@@ -63,44 +73,31 @@ export default function GameScreen() {
       const container = mapContainerRef.current
       if (!container || mapRef.current) return
 
-      const map = L.map(container, {
-        zoomControl: false,
-        attributionControl: false,
-      }).setView([37.7749, -122.4194], 17)
+      const map = L.map(container, { zoomControl: false, attributionControl: false })
+        .setView([37.7749, -122.4194], 17)
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-      }).addTo(map)
-
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
       mapRef.current = map
     })
-
     return () => {
-      if (mapRef.current) {
-        mapRef.current.remove()
-        mapRef.current = null
-        markersRef.current = {}
-        powerUpMarkersRef.current = {}
-        boundaryLayerRef.current = null
-      }
+      mapRef.current?.remove()
+      mapRef.current = null
+      markersRef.current = {}
+      powerUpMarkersRef.current = {}
+      boundaryLayerRef.current = null
     }
   }, [])
 
   // Draw boundary once
   useEffect(() => {
-    if (!mapRef.current || !LRef.current || !game?.boundary?.length) return
-    if (boundaryLayerRef.current) return // already drawn
-
-    const L = LRef.current
-    const latlngs = game.boundary.map(p => [p.lat, p.lng])
-    boundaryLayerRef.current = L.polygon(latlngs, {
-      color: '#ef4444',
-      weight: 2,
-      fillOpacity: 0.06,
-    }).addTo(mapRef.current)
+    if (!mapRef.current || !LRef.current || !game?.boundary?.length || boundaryLayerRef.current) return
+    boundaryLayerRef.current = LRef.current.polygon(
+      game.boundary.map(p => [p.lat, p.lng]),
+      { color: '#ff3b3b', weight: 2, fillOpacity: 0.06 }
+    ).addTo(mapRef.current)
   }, [game?.boundary, mapRef.current])
 
-  // Update player markers whenever game state changes
+  // Update player markers
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.players) return
     const L = LRef.current
@@ -111,86 +108,60 @@ export default function GameScreen() {
     const activeRevealRunner = getActiveEffect(game, 'REVEAL_RUNNER')
     const activeCluster = getActiveEffect(game, 'CLUSTER_SCAN')
 
-    // Pan to self
     if (myLoc) {
       map.setView([myLoc.lat, myLoc.lng], map.getZoom(), { animate: true })
-      if (game.boundary?.length > 2) {
-        setOutOfBounds(!pointInPolygon(myLoc, game.boundary))
-      }
+      if (game.boundary?.length > 2) setOutOfBounds(!pointInPolygon(myLoc, game.boundary))
     }
 
-    // Decide which players to show
     const visible = {}
     visible[uid] = { ...game.players[uid], isSelf: true }
-
     if (role === 'it') {
       itPlayers.forEach(p => { visible[p.id] = p })
-      if (activeRevealRunner || activeCluster) {
-        runners.forEach(p => { visible[p.id] = p })
-      }
+      if (activeRevealRunner || activeCluster) runners.forEach(p => { visible[p.id] = p })
     }
-    if (role === 'runner' && activeRevealIt) {
-      itPlayers.forEach(p => { visible[p.id] = p })
-    }
+    if (role === 'runner' && activeRevealIt) itPlayers.forEach(p => { visible[p.id] = p })
 
     const seen = new Set()
-
     Object.entries(visible).forEach(([pid, player]) => {
       if (!player?.location) return
       seen.add(pid)
-
-      const color = pid === uid ? '#3b82f6' : player.role === 'it' ? '#ef4444' : '#22c55e'
-      const radius = pid === uid ? 10 : 8
+      const isMe = pid === uid
+      const color = isMe ? '#448aff' : player.role === 'it' ? '#ff3b3b' : '#00e676'
+      const radius = isMe ? 11 : 9
       const latlng = [player.location.lat, player.location.lng]
 
       if (markersRef.current[pid]) {
         markersRef.current[pid].setLatLng(latlng)
+        markersRef.current[pid].setStyle({ fillColor: color, radius })
       } else {
-        const marker = L.circleMarker(latlng, {
-          radius,
-          color: '#fff',
-          weight: 2,
-          fillColor: color,
-          fillOpacity: 1,
+        markersRef.current[pid] = L.circleMarker(latlng, {
+          radius, color: '#000', weight: 2, fillColor: color, fillOpacity: 1,
         })
-          .bindTooltip(player.isSelf ? 'You' : player.name, { permanent: false, direction: 'top' })
+          .bindTooltip(isMe ? 'You' : player.name, { permanent: false, direction: 'top' })
           .addTo(map)
-        markersRef.current[pid] = marker
       }
-
-      // Update colour in case role changed
-      markersRef.current[pid].setStyle({ fillColor: color, radius })
     })
 
-    // Cluster blobs for "It" with CLUSTER_SCAN
+    // Cluster blobs
     if (role === 'it' && activeCluster) {
-      const clusters = computeClusters(game.players)
-      clusters.forEach((c, i) => {
+      computeClusters(game.players).forEach((c, i) => {
         const key = `cluster_${i}`
         seen.add(key)
-        const latlng = [c.lat, c.lng]
         if (!markersRef.current[key]) {
-          markersRef.current[key] = L.circleMarker(latlng, {
-            radius: 14 + c.count * 4,
-            color: '#f97316',
-            weight: 1,
-            fillColor: '#f97316',
-            fillOpacity: 0.35,
+          markersRef.current[key] = L.circleMarker([c.lat, c.lng], {
+            radius: 14 + c.count * 5,
+            color: '#ff9100', weight: 1, fillColor: '#ff9100', fillOpacity: 0.3,
           })
-            .bindTooltip(`${c.count} runners`, { permanent: true, direction: 'center', className: 'cluster-label' })
+            .bindTooltip(`${c.count}`, { permanent: true, direction: 'center', className: 'cluster-label' })
             .addTo(map)
         } else {
-          markersRef.current[key].setLatLng(latlng)
+          markersRef.current[key].setLatLng([c.lat, c.lng])
         }
       })
     }
 
-    // Remove stale markers
     Object.keys(markersRef.current).forEach(pid => {
-      if (!seen.has(pid)) {
-        markersRef.current[pid].remove()
-        delete markersRef.current[pid]
-      }
+      if (!seen.has(pid)) { markersRef.current[pid].remove(); delete markersRef.current[pid] }
     })
   }, [game, role])
 
@@ -198,23 +169,23 @@ export default function GameScreen() {
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.powerUpSpawns) return
     const L = LRef.current
-
     const seen = new Set()
+
     game.powerUpSpawns.forEach(spawn => {
       if (!spawn.location) return
       seen.add(spawn.id)
-
       if (!powerUpMarkersRef.current[spawn.id]) {
         const info = POWERUP_TYPES[spawn.type]
-        const icon = L.divIcon({
-          html: `<div style="font-size:24px;line-height:1;">${info?.emoji || '⭐'}</div>`,
-          className: '',
-          iconSize: [28, 28],
-          iconAnchor: [14, 14],
-        })
         powerUpMarkersRef.current[spawn.id] = L.marker(
           [spawn.location.lat, spawn.location.lng],
-          { icon }
+          {
+            icon: L.divIcon({
+              html: `<div style="font-size:26px;filter:drop-shadow(0 0 6px rgba(255,214,0,.6));">${info?.emoji || '⭐'}</div>`,
+              className: '',
+              iconSize: [30, 30],
+              iconAnchor: [15, 15],
+            }),
+          }
         )
           .bindTooltip(info?.label || 'Power-up', { direction: 'top' })
           .addTo(mapRef.current)
@@ -222,10 +193,7 @@ export default function GameScreen() {
     })
 
     Object.keys(powerUpMarkersRef.current).forEach(sid => {
-      if (!seen.has(sid)) {
-        powerUpMarkersRef.current[sid].remove()
-        delete powerUpMarkersRef.current[sid]
-      }
+      if (!seen.has(sid)) { powerUpMarkersRef.current[sid].remove(); delete powerUpMarkersRef.current[sid] }
     })
   }, [game?.powerUpSpawns])
 
@@ -233,7 +201,6 @@ export default function GameScreen() {
   useEffect(() => {
     const myLoc = game?.players?.[uid]?.location
     if (!myLoc || !game?.powerUpSpawns) return
-
     game.powerUpSpawns.forEach(spawn => {
       if (!spawn.location) return
       if (distanceMetres(myLoc, spawn.location) <= POWERUP_COLLECT_RADIUS_M) {
@@ -243,7 +210,7 @@ export default function GameScreen() {
     })
   }, [game?.players?.[uid]?.location])
 
-  // Host replenishes power-ups every 3 min
+  // Host replenishes power-ups
   useEffect(() => {
     if (!game || game.hostId !== uid || game.status !== 'LIVE') return
     if (Date.now() - lastReplenishRef.current < POWERUP_REPLENISH_MS) return
@@ -272,7 +239,7 @@ export default function GameScreen() {
     const me = game?.players?.[uid]
     if (!me || me.revealsLeft <= 0) return
     await useReveal(roomCode, uid, type)
-    notify(`Reveal used! ${me.revealsLeft - 1} remaining.`)
+    notify(`Reveal used — ${me.revealsLeft - 1} remaining`)
   }
 
   function notify(msg) {
@@ -282,6 +249,7 @@ export default function GameScreen() {
 
   const myPowerUps = game?.players?.[uid]?.powerUps || []
   const myReveals = game?.players?.[uid]?.revealsLeft || 0
+  const notifTop = outOfBounds ? 70 : 'calc(var(--safe-top) + 66px)'
 
   return (
     <div className="screen" style={{ height: '100dvh', position: 'relative' }}>
@@ -291,58 +259,102 @@ export default function GameScreen() {
 
       {/* Top HUD */}
       <div className="map-overlay-top">
-        <div className="map-chip" style={{ display: 'flex', gap: 12, flex: 1 }}>
-          <span>🏃 {runners.length}</span>
-          <span>🔴 {itPlayers.length}</span>
+        <div className="map-chip" style={{ display: 'flex', gap: 14, flex: 1, alignItems: 'center' }}>
+          <span style={{ color: 'var(--green)' }}>🏃 {runners.length}</span>
+          <span style={{ color: 'var(--red)' }}>🔴 {itPlayers.length}</span>
           <span style={{ marginLeft: 'auto' }}>
             <span className={`badge ${role === 'it' ? 'badge-red' : 'badge-green'}`}>
-              {role === 'it' ? 'IT' : 'Runner'}
+              {role === 'it' ? 'IT' : 'RUNNER'}
             </span>
           </span>
         </div>
       </div>
 
-      {/* Out of bounds */}
+      {/* Out of bounds warning */}
       {outOfBounds && (
         <div style={{
-          position: 'absolute', top: 70, left: 12, right: 12, zIndex: 1000,
-          background: 'rgba(239,68,68,0.9)', borderRadius: 8,
-          padding: '10px 14px', textAlign: 'center', fontWeight: 700,
+          position: 'absolute',
+          top: 'calc(var(--safe-top) + 64px)',
+          left: 12, right: 12, zIndex: 1000,
+          background: 'rgba(255,59,59,.92)',
+          borderRadius: 'var(--radius-sm)',
+          padding: '10px 16px',
+          textAlign: 'center',
+          fontFamily: 'var(--font-display)',
+          fontSize: 13,
+          letterSpacing: '0.06em',
         }}>
-          ⚠️ You are OUT OF BOUNDS
+          ⚠ OUT OF BOUNDS — RETURN TO PLAY AREA
         </div>
       )}
 
       {/* Toast */}
       {notification && (
-        <div style={{
-          position: 'absolute', top: outOfBounds ? 120 : 70, left: 12, right: 12, zIndex: 1001,
-          background: 'rgba(15,23,42,0.95)', borderRadius: 8,
-          padding: '10px 14px', textAlign: 'center', fontWeight: 600,
-          border: '1px solid var(--border)',
-        }}>
+        <div className="toast" style={{ top: outOfBounds ? 118 : 'calc(var(--safe-top) + 64px)' }}>
           {notification}
         </div>
       )}
 
-      {/* Incoming tag confirmation */}
+      {/* Tag confirmation overlay */}
       {tagRequest?.targetId === uid && (
         <div style={{
-          position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 2000,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          gap: 20, padding: 24,
+          position: 'absolute', inset: 0,
+          background: 'rgba(0,0,0,.92)',
+          zIndex: 2000,
+          display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center',
+          gap: 20, padding: '32px 24px',
+          animation: 'fadeIn .2s ease',
         }}>
-          <div style={{ fontSize: 56 }}>🏷️</div>
-          <div className="title" style={{ textAlign: 'center' }}>You've been tagged!</div>
-          <div className="subtitle">Confirm or dispute within 5 seconds</div>
+          <div style={{
+            width: 90, height: 90, borderRadius: '50%',
+            background: 'rgba(255,59,59,.12)',
+            border: '2px solid var(--red)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 44,
+            boxShadow: '0 0 40px var(--red-glow)',
+          }}>🏷️</div>
+
+          <div className="title" style={{ textAlign: 'center', color: 'var(--red)' }}>
+            TAGGED!
+          </div>
+          <div className="subtitle" style={{ textAlign: 'center' }}>
+            Confirm or dispute — auto-confirms in {tagCountdown}s
+          </div>
+
+          {/* Countdown bar */}
+          <div style={{
+            width: '100%', height: 4,
+            background: 'var(--surface2)',
+            borderRadius: 2, overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${(tagCountdown / 5) * 100}%`,
+              background: 'var(--red)',
+              transition: 'width 1s linear',
+              boxShadow: '0 0 8px var(--red-glow)',
+            }} />
+          </div>
+
           <div style={{ display: 'flex', gap: 12, width: '100%' }}>
-            <button className="btn btn-ghost" style={{ flex: 1 }}
-              onClick={() => { disputeTag(roomCode); setTagRequest(null) }}>
+            <button
+              className="btn btn-ghost"
+              style={{ flex: 1 }}
+              onClick={() => { disputeTag(roomCode); setTagRequest(null); clearInterval(tagTimerRef.current) }}
+            >
               Dispute
             </button>
-            <button className="btn btn-primary" style={{ flex: 1 }}
-              onClick={() => { confirmTag(roomCode, uid, tagRequest.taggerId); setTagRequest(null) }}>
-              Confirm
+            <button
+              className="btn btn-primary"
+              style={{ flex: 1 }}
+              onClick={() => {
+                confirmTag(roomCode, uid, tagRequest.taggerId)
+                setTagRequest(null)
+                clearInterval(tagTimerRef.current)
+              }}
+            >
+              Confirm Tag
             </button>
           </div>
         </div>
@@ -350,9 +362,11 @@ export default function GameScreen() {
 
       {/* Bottom controls */}
       <div className="map-overlay-bottom">
+
+        {/* Power-ups */}
         {myPowerUps.length > 0 && (
-          <div className="card" style={{ padding: 12 }}>
-            <div className="label" style={{ marginBottom: 8 }}>Power-ups</div>
+          <div className="map-card">
+            <div className="label" style={{ marginBottom: 10 }}>Power-ups</div>
             <div className="powerup-bar">
               {[...new Set(myPowerUps)].map(type => {
                 const info = POWERUP_TYPES[type]
@@ -362,16 +376,19 @@ export default function GameScreen() {
                   <button
                     key={type}
                     className="powerup-btn"
-                    style={{ background: info.color + '33', position: 'relative' }}
+                    style={{ background: info.color + '18', borderColor: info.color + '44' }}
                     onClick={() => handleActivatePowerUp(type)}
                     disabled={wrongRole}
                     title={info.description}
                   >
                     {info.emoji}
                     {count > 1 && (
-                      <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 10, fontWeight: 800 }}>
-                        ×{count}
-                      </span>
+                      <span style={{
+                        position: 'absolute', top: 2, right: 4,
+                        fontSize: 9, fontWeight: 700,
+                        fontFamily: 'var(--font-display)',
+                        color: '#fff',
+                      }}>×{count}</span>
                     )}
                   </button>
                 )
@@ -380,39 +397,58 @@ export default function GameScreen() {
           </div>
         )}
 
+        {/* Reveal buttons (It only) */}
         {role === 'it' && (
-          <div className="card" style={{ padding: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div className="label">Reveals</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: myReveals > 0 ? 'var(--yellow)' : 'var(--text-muted)' }}>
+          <div className="map-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <div className="label" style={{ marginBottom: 0 }}>Reveals</div>
+              <div style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 13,
+                color: myReveals > 0 ? 'var(--yellow)' : 'var(--text-muted)',
+              }}>
                 {myReveals} left
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-ghost" style={{ flex: 1, padding: '10px 8px', fontSize: 13 }}
-                disabled={myReveals <= 0} onClick={() => handleReveal('REVEAL_RUNNER')}>
-                📍 Reveal Runner
+              <button
+                className="btn btn-ghost"
+                style={{ flex: 1, minHeight: 44, fontSize: 12, padding: '10px 8px' }}
+                disabled={myReveals <= 0}
+                onClick={() => handleReveal('REVEAL_RUNNER')}
+              >
+                📍 Runner
               </button>
-              <button className="btn btn-ghost" style={{ flex: 1, padding: '10px 8px', fontSize: 13 }}
-                disabled={myReveals <= 0} onClick={() => handleReveal('CLUSTER_SCAN')}>
+              <button
+                className="btn btn-ghost"
+                style={{ flex: 1, minHeight: 44, fontSize: 12, padding: '10px 8px' }}
+                disabled={myReveals <= 0}
+                onClick={() => handleReveal('CLUSTER_SCAN')}
+              >
                 👥 Clusters
               </button>
             </div>
           </div>
         )}
 
+        {/* Tag button (It only) */}
         {role === 'it' && (
           <button
             className="btn btn-primary"
             style={{
-              fontSize: 18, padding: '18px',
-              opacity: nearbyRunner ? 1 : 0.3,
-              background: nearbyRunner ? 'var(--red)' : 'var(--surface2)',
+              fontSize: 16,
+              minHeight: 58,
+              opacity: nearbyRunner ? 1 : 0.28,
+              background: nearbyRunner ? 'var(--red)' : 'var(--surface)',
+              boxShadow: nearbyRunner ? '0 4px 28px var(--red-glow)' : 'none',
+              border: nearbyRunner ? 'none' : '1px solid var(--border-light)',
             }}
             disabled={!nearbyRunner}
             onClick={handleTag}
           >
-            {nearbyRunner ? `🏷️ Tag ${nearbyRunner.name}!` : '🏷️ Get within 10m to tag'}
+            {nearbyRunner
+              ? `🏷️ TAG ${nearbyRunner.name.toUpperCase()}!`
+              : '🏷️ Get within 10m to tag'}
           </button>
         )}
       </div>
