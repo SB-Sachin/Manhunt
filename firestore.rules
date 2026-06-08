@@ -9,9 +9,17 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.hostId == request.auth.uid;
 
-      // Update: must be an authenticated player in the game
+      // Update: allow joining a LOBBY game, or any existing player updating during play
       allow update: if request.auth != null
-        && request.auth.uid in resource.data.players;
+        && (
+          // Joining: game is in LOBBY and user is only adding themselves to players
+          (resource.data.status == 'LOBBY'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
+            && request.resource.data.players.keys().hasAll(resource.data.players.keys()))
+          ||
+          // In-game: user is already a player
+          request.auth.uid in resource.data.players
+        );
     }
   }
 }
