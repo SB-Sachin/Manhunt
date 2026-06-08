@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /games/{gameId} {
+      // Anyone authenticated (anonymous) can read a game
+      allow read: if request.auth != null;
+
+      // Create: must be authenticated, setting themselves as host
+      allow create: if request.auth != null
+        && request.resource.data.hostId == request.auth.uid;
+
+      // Update: must be an authenticated player in the game
+      allow update: if request.auth != null
+        && request.auth.uid in resource.data.players;
+    }
+  }
+}
