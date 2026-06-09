@@ -5,12 +5,26 @@
    across devices. De-dupes by game code so a game is never counted twice.
    ─────────────────────────────────────────────────────────────────────────── */
 
-import { doc, getDoc, setDoc, deleteDoc, runTransaction } from 'firebase/firestore'
-import { db } from './firebase.js'
+import {
+  doc, getDoc, setDoc, deleteDoc, runTransaction,
+  collection, query, orderBy, limit, getDocs,
+} from 'firebase/firestore'
+import { db, auth } from './firebase.js'
 import { getStats, setStatsRaw, mergeStats, applyResult, DEFAULT_STATS } from '../utils/stats.js'
 
 const MERGED_FLAG = (uid) => `manhunt.merged.${uid}`
 const userRef = (uid) => doc(db, 'users', uid)
+
+/* Best display name for the leaderboard: account name → last game name → Player. */
+function currentDisplayName() {
+  const u = auth.currentUser
+  if (u?.displayName) return u.displayName
+  try {
+    const s = JSON.parse(localStorage.getItem('manhunt.session') || '{}')
+    if (s.displayName) return s.displayName
+  } catch { /* ignore */ }
+  return 'Player'
+}
 
 /*
  * Call right after a successful sign-in/link, and on every boot for a logged-in
@@ -35,6 +49,7 @@ export async function signInSync(uid) {
   const merged = mergeStats(cloud || DEFAULT_STATS, getStats())
   // Preserve the cloud's recorded-game list so future de-dupe still works.
   merged.recordedGames = (cloud?.recordedGames || []).slice(-200)
+  merged.displayName = currentDisplayName()
   await setDoc(userRef(uid), merged, { merge: true })
   setStatsRaw(merged)
   try { localStorage.setItem(MERGED_FLAG(uid), '1') } catch { /* ignore */ }
@@ -56,11 +71,19 @@ export async function recordGameToCloud(uid, result) {
 
     const { stats } = applyResult(data, result)
     stats.recordedGames = [...recorded, result.gameCode].filter(Boolean).slice(-200)
+    stats.displayName = currentDisplayName()
     tx.set(ref, stats, { merge: true })
     return stats
   })
   setStatsRaw(merged)
   return merged
+}
+
+/* Top players for the leaderboard. metric is a numeric field (e.g. 'wins'). */
+export async function fetchLeaderboard(metric = 'wins', max = 50) {
+  const q = query(collection(db, 'users'), orderBy(metric, 'desc'), limit(max))
+  const snap = await getDocs(q)
+  return snap.docs.map(d => ({ uid: d.id, ...d.data() }))
 }
 
 /* Remove the cloud stats document (used by Delete Account). */

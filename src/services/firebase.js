@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getFirestore } from 'firebase/firestore'
-import { getAuth } from 'firebase/auth'
+import { initializeAuth, browserLocalPersistence, indexedDBLocalPersistence } from 'firebase/auth'
 
 // Replace with your Firebase project config from https://console.firebase.google.com
 const firebaseConfig = {
@@ -14,4 +14,9 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig)
 export const db = getFirestore(app)
-export const auth = getAuth(app)
+
+// Persist the signed-in user across app close/reopen (IndexedDB, falling back to
+// localStorage). Without explicit persistence a session can be lost on relaunch.
+export const auth = initializeAuth(app, {
+  persistence: [indexedDBLocalPersistence, browserLocalPersistence],
+})

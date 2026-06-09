@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createGame, joinGame } from '../services/gameService.js'
 import { useGameStore } from '../store/gameStore.js'
+import { getAccount } from '../services/authService.js'
 import { requestLocationPermission } from '../hooks/useLocation.js'
 import { primeAudio } from '../utils/sound.js'
 import SoundToggle from '../components/SoundToggle.jsx'
@@ -9,7 +10,10 @@ import SoundToggle from '../components/SoundToggle.jsx'
 export default function HomeScreen() {
   const navigate = useNavigate()
   const setSession = useGameStore(s => s.setSession)
-  const [name, setName] = useState('')
+  const savedName = useGameStore(s => s.displayName)
+  // Suggest the account name (Google) or the last-used name so logged-in players
+  // don't retype it every game.
+  const [name, setName] = useState(() => getAccount().displayName || savedName || '')
   const [code, setCode] = useState('')
   const [dispersalMins, setDispersal] = useState(2)
   const [mode, setMode] = useState(null)
@@ -54,9 +58,14 @@ export default function HomeScreen() {
         position: 'absolute', top: 'calc(var(--safe-top) + 14px)', right: 16, left: 16,
         display: 'flex', justifyContent: 'space-between',
       }}>
-        <button className="btn-pill" onClick={() => { primeAudio(); navigate('/profile') }}>
-          📊 Stats
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn-pill" onClick={() => { primeAudio(); navigate('/profile') }}>
+            📊 Stats
+          </button>
+          <button className="btn-pill" onClick={() => { primeAudio(); navigate('/leaderboard') }}>
+            🏆 Ranks
+          </button>
+        </div>
         <div onClick={primeAudio}><SoundToggle variant="pill" /></div>
       </div>
 

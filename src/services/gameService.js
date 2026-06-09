@@ -2,12 +2,25 @@ import {
   doc, setDoc, updateDoc, onSnapshot,
   serverTimestamp, getDoc, arrayUnion, runTransaction, deleteField
 } from 'firebase/firestore'
-import { signInAnonymously } from 'firebase/auth'
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth'
 import { db, auth } from './firebase.js'
 import { POWERUP_TYPES } from '../utils/powerups.js'
 import { randomPointInPolygon } from '../utils/geo.js'
 
+/* Resolve once Firebase has restored any persisted session from storage. */
+function authRestored() {
+  if (auth.authStateReady) return auth.authStateReady()
+  return new Promise((resolve) => {
+    const unsub = onAuthStateChanged(auth, () => { unsub(); resolve() })
+  })
+}
+
 export async function ensureAuth() {
+  if (auth.currentUser) return auth.currentUser
+  // CRITICAL: wait for Firebase to restore a saved (logged-in) user before
+  // falling back to anonymous — otherwise we'd overwrite a real account with a
+  // fresh anonymous one on every app launch.
+  await authRestored()
   if (!auth.currentUser) {
     await signInAnonymously(auth)
   }

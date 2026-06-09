@@ -82,13 +82,14 @@ export default function ProfileScreen() {
         </div>
       ) : !showSignIn ? (
         <button className="btn btn-secondary" onClick={() => { setShowSignIn(true); setError('') }}>
-          ☁️ Save my stats across devices
+          🔐 Create Account
         </button>
       ) : (
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="label" style={{ marginBottom: 0 }}>Save your stats</div>
+          <div className="label" style={{ marginBottom: 0 }}>Create your account</div>
           <div className="subtitle" style={{ fontSize: 12, marginTop: -4 }}>
-            Optional — create an account so your stats follow you to any device.
+            Optional — saves your stats so they follow you to any device. Already
+            have one? Use the same Google or email to sign back in.
           </div>
 
           {/* Age gate */}

@@ -7,6 +7,7 @@ import DisperseScreen from './screens/DisperseScreen.jsx'
 import GameScreen from './screens/GameScreen.jsx'
 import GameOverScreen from './screens/GameOverScreen.jsx'
 import ProfileScreen from './screens/ProfileScreen.jsx'
+import LeaderboardScreen from './screens/LeaderboardScreen.jsx'
 import JoinRoom from './screens/JoinRoom.jsx'
 import { useGameStore } from './store/gameStore.js'
 import { ensureAuth } from './services/gameService.js'
@@ -59,6 +60,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<HomeScreen />} />
         <Route path="/profile" element={<ProfileScreen />} />
+        <Route path="/leaderboard" element={<LeaderboardScreen />} />
         <Route path="/g/:code" element={<JoinRoom />} />
         <Route path="/lobby" element={<RequireSession><LobbyScreen /></RequireSession>} />
         <Route path="/setup" element={<RequireSession><SetupScreen /></RequireSession>} />
