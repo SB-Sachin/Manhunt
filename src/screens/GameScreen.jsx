@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectMyRole, selectItPlayers, selectRunners } from '../store/gameStore.js'
 import {
@@ -9,9 +9,20 @@ import { useLocationTracking } from '../hooks/useLocation.js'
 import { distanceMetres, computeClusters, pointInPolygon } from '../utils/geo.js'
 import { POWERUP_TYPES, getActiveEffect, isImmune } from '../utils/powerups.js'
 
-const TAG_RADIUS_M = 10
+const TAG_PROXIMITY_M = 20          // soft proximity hint (not a hard gate)
 const POWERUP_COLLECT_RADIUS_M = 15
 const POWERUP_REPLENISH_MS = 3 * 60 * 1000
+
+/* ── Notification queue hook ──────────────────────────────────────────────── */
+function useNotifications() {
+  const [queue, setQueue] = useState([])
+  const push = useCallback((msg, type = 'info') => {
+    const id = Math.random().toString(36).slice(2)
+    setQueue(q => [...q, { id, msg, type }])
+    setTimeout(() => setQueue(q => q.filter(n => n.id !== id)), 4000)
+  }, [])
+  return [queue, push]
+}
 
 export default function GameScreen() {
   const navigate = useNavigate()
@@ -21,27 +32,97 @@ export default function GameScreen() {
   const runners = useGameStore(selectRunners)
 
   const [tagRequest, setTagRequest] = useState(null)
-  const [notification, setNotification] = useState(null)
-  const [outOfBounds, setOutOfBounds] = useState(false)
   const [tagCountdown, setTagCountdown] = useState(5)
+  const [outOfBounds, setOutOfBounds] = useState(false)
+  const [showTagSheet, setShowTagSheet] = useState(false)
+  const [powerUpInfo, setPowerUpInfo] = useState(null)   // {type, info} for description popup
+  const [notifications, pushNotification] = useNotifications()
 
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
   const markersRef = useRef({})
   const powerUpMarkersRef = useRef({})
   const boundaryLayerRef = useRef(null)
-  const lastReplenishRef = useRef(Date.now())
   const LRef = useRef(null)
   const tagTimerRef = useRef(null)
+  const lastReplenishRef = useRef(Date.now())
+
+  // Track previous game state for diffing (notifications)
+  const prevGameRef = useRef(null)
 
   useLocationTracking(roomCode, uid, true)
 
+  /* ── Firestore subscription ────────────────────────────────────────────── */
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
+
     const unsub = subscribeToGame(roomCode, (g) => {
+      const prev = prevGameRef.current
+
+      // ── Diff for notifications ──────────────────────────────────────────
+
+      if (prev) {
+        // Someone just got tagged → both sides get a notification
+        const prevTag = prev.tagRequest
+        const newTag = g.tagRequest
+        if (prevTag?.status === 'pending' && !newTag) {
+          // Tag was resolved — find who changed role to 'it'
+          Object.values(g.players).forEach(p => {
+            const was = prev.players?.[p.id]
+            if (was?.role === 'runner' && p.role === 'it') {
+              if (p.id === uid) {
+                pushNotification('🏷️ You were tagged! You are now "It"', 'danger')
+              } else {
+                pushNotification(`🏷️ ${p.name} was tagged and is now "It"`, 'warning')
+              }
+            }
+          })
+        }
+
+        // Power-up collected by me
+        const myPrev = prev.players?.[uid]?.powerUps || []
+        const myCurr = g.players?.[uid]?.powerUps || []
+        if (myCurr.length > myPrev.length) {
+          const newType = myCurr[myCurr.length - 1]
+          const info = POWERUP_TYPES[newType]
+          pushNotification(`${info?.emoji} Picked up ${info?.label}!`, 'success')
+        }
+
+        // Active effect just added that targets me
+        const prevEffectIds = new Set((prev.activeEffects || []).map(e => e.id))
+        ;(g.activeEffects || []).forEach(effect => {
+          if (prevEffectIds.has(effect.id)) return          // not new
+          if (effect.type === 'REVEAL_RUNNER' && role === 'runner') {
+            pushNotification(`📍 "It" revealed a runner's location!`, 'danger')
+          }
+          if (effect.type === 'CLUSTER_SCAN' && role === 'runner') {
+            pushNotification('👥 "It" is scanning for runner clusters!', 'danger')
+          }
+          if (effect.type === 'REVEAL_IT' && role === 'it') {
+            pushNotification('👁️ Runners can see your location!', 'warning')
+          }
+          if (effect.type === 'IMMUNITY' && effect.activatedBy === uid) {
+            pushNotification(`🛡️ Immunity active — you can't be tagged!`, 'success')
+          }
+        })
+
+        // Game over — winner just set
+        if (!prev.winner && g.winner) {
+          if (g.winner === uid) {
+            pushNotification('🏆 YOU WIN — Last runner standing!', 'success')
+          } else {
+            const winner = g.players?.[g.winner]
+            pushNotification(`🏁 Game over! ${winner?.name ?? 'Someone'} wins!`, 'info')
+          }
+        }
+      }
+
+      prevGameRef.current = g
       setGame(g)
+
       if (g.status === 'GAME_OVER') navigate('/gameover')
 
+      // Incoming tag request targeting me
       if (g.tagRequest?.targetId === uid && g.tagRequest?.status === 'pending') {
         setTagRequest(g.tagRequest)
         setTagCountdown(5)
@@ -62,10 +143,11 @@ export default function GameScreen() {
         clearInterval(tagTimerRef.current)
       }
     })
+
     return () => { unsub(); clearInterval(tagTimerRef.current) }
   }, [roomCode])
 
-  // Init Leaflet
+  /* ── Init Leaflet map ──────────────────────────────────────────────────── */
   useEffect(() => {
     if (mapRef.current) return
     import('leaflet').then((L) => {
@@ -73,12 +155,17 @@ export default function GameScreen() {
       const container = mapContainerRef.current
       if (!container || mapRef.current) return
 
-      const map = L.map(container, { zoomControl: false, attributionControl: false })
-        .setView([37.7749, -122.4194], 17)
+      const map = L.map(container, {
+        zoomControl: false,
+        attributionControl: false,
+        tap: true,
+        tapTolerance: 15,
+      }).setView([37.7749, -122.4194], 17)
 
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
       mapRef.current = map
     })
+
     return () => {
       mapRef.current?.remove()
       mapRef.current = null
@@ -88,7 +175,7 @@ export default function GameScreen() {
     }
   }, [])
 
-  // Draw boundary once
+  /* ── Draw boundary once ────────────────────────────────────────────────── */
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.boundary?.length || boundaryLayerRef.current) return
     boundaryLayerRef.current = LRef.current.polygon(
@@ -97,7 +184,7 @@ export default function GameScreen() {
     ).addTo(mapRef.current)
   }, [game?.boundary, mapRef.current])
 
-  // Update player markers
+  /* ── Update player markers ─────────────────────────────────────────────── */
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.players) return
     const L = LRef.current
@@ -165,7 +252,7 @@ export default function GameScreen() {
     })
   }, [game, role])
 
-  // Power-up spawn markers
+  /* ── Power-up spawn markers ────────────────────────────────────────────── */
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.powerUpSpawns) return
     const L = LRef.current
@@ -180,15 +267,13 @@ export default function GameScreen() {
           [spawn.location.lat, spawn.location.lng],
           {
             icon: L.divIcon({
-              html: `<div style="font-size:26px;filter:drop-shadow(0 0 6px rgba(255,214,0,.6));">${info?.emoji || '⭐'}</div>`,
+              html: `<div style="font-size:28px;filter:drop-shadow(0 0 8px rgba(255,214,0,.7));">${info?.emoji || '⭐'}</div>`,
               className: '',
-              iconSize: [30, 30],
-              iconAnchor: [15, 15],
+              iconSize: [32, 32],
+              iconAnchor: [16, 16],
             }),
           }
-        )
-          .bindTooltip(info?.label || 'Power-up', { direction: 'top' })
-          .addTo(mapRef.current)
+        ).bindTooltip(info?.label || 'Power-up', { direction: 'top' }).addTo(mapRef.current)
       }
     })
 
@@ -197,7 +282,7 @@ export default function GameScreen() {
     })
   }, [game?.powerUpSpawns])
 
-  // Auto-collect nearby power-ups
+  /* ── Auto-collect nearby power-ups ────────────────────────────────────── */
   useEffect(() => {
     const myLoc = game?.players?.[uid]?.location
     if (!myLoc || !game?.powerUpSpawns) return
@@ -205,12 +290,11 @@ export default function GameScreen() {
       if (!spawn.location) return
       if (distanceMetres(myLoc, spawn.location) <= POWERUP_COLLECT_RADIUS_M) {
         collectPowerUp(roomCode, uid, spawn.id).catch(() => {})
-        notify(`Picked up ${POWERUP_TYPES[spawn.type]?.emoji} ${POWERUP_TYPES[spawn.type]?.label}!`)
       }
     })
   }, [game?.players?.[uid]?.location])
 
-  // Host replenishes power-ups
+  /* ── Host replenishes power-ups ────────────────────────────────────────── */
   useEffect(() => {
     if (!game || game.hostId !== uid || game.status !== 'LIVE') return
     if (Date.now() - lastReplenishRef.current < POWERUP_REPLENISH_MS) return
@@ -218,93 +302,366 @@ export default function GameScreen() {
     replenishPowerUps(roomCode, game.boundary).catch(() => {})
   }, [game?.players])
 
-  const myLocation = game?.players?.[uid]?.location
-  const nearbyRunner = role === 'it' && myLocation
-    ? runners.find(r => r.location && distanceMetres(myLocation, r.location) <= TAG_RADIUS_M)
-    : null
-
-  async function handleTag() {
-    if (!nearbyRunner) return
-    if (isImmune(game, nearbyRunner.id)) { notify('🛡️ That runner is immune!'); return }
-    await tagPlayer(roomCode, uid, nearbyRunner.id)
-    notify(`Tag request sent to ${nearbyRunner.name}!`)
+  /* ── Actions ───────────────────────────────────────────────────────────── */
+  async function handleTagPlayer(runnerId) {
+    setShowTagSheet(false)
+    const runner = game?.players?.[runnerId]
+    if (!runner) return
+    if (isImmune(game, runnerId)) {
+      pushNotification(`🛡️ ${runner.name} has immunity — can't be tagged!`, 'warning')
+      return
+    }
+    await tagPlayer(roomCode, uid, runnerId)
+    pushNotification(`Tag request sent to ${runner.name}!`, 'info')
   }
 
   async function handleActivatePowerUp(type) {
+    setPowerUpInfo(null)
     await activatePowerUp(roomCode, uid, type)
-    notify(`${POWERUP_TYPES[type]?.emoji} ${POWERUP_TYPES[type]?.label} activated!`)
   }
 
   async function handleReveal(type) {
     const me = game?.players?.[uid]
     if (!me || me.revealsLeft <= 0) return
     await useReveal(roomCode, uid, type)
-    notify(`Reveal used — ${me.revealsLeft - 1} remaining`)
   }
 
-  function notify(msg) {
-    setNotification(msg)
-    setTimeout(() => setNotification(null), 3000)
-  }
-
+  /* ── Derived values ────────────────────────────────────────────────────── */
+  const myLocation = game?.players?.[uid]?.location
   const myPowerUps = game?.players?.[uid]?.powerUps || []
   const myReveals = game?.players?.[uid]?.revealsLeft || 0
-  const notifTop = outOfBounds ? 70 : 'calc(var(--safe-top) + 66px)'
 
+  // Only show power-ups relevant to the player's role
+  const myRolePowerUps = myPowerUps.filter(type => {
+    const info = POWERUP_TYPES[type]
+    return info && (info.availableTo === role || info.availableTo === 'both')
+  })
+
+  // Proximity hint (not a gate)
+  const nearbyRunner = role === 'it' && myLocation
+    ? runners.find(r => r.location && distanceMetres(myLocation, r.location) <= TAG_PROXIMITY_M)
+    : null
+
+  const activeRunners = runners.filter(r => !r.isEliminated)
+
+  /* ── Notification colours ──────────────────────────────────────────────── */
+  const notifColors = {
+    success: { bg: 'rgba(0,230,118,.12)', border: 'rgba(0,230,118,.35)', text: 'var(--green)' },
+    danger:  { bg: 'rgba(255,59,59,.12)', border: 'rgba(255,59,59,.35)', text: 'var(--red)' },
+    warning: { bg: 'rgba(255,214,0,.1)',  border: 'rgba(255,214,0,.35)',  text: 'var(--yellow)' },
+    info:    { bg: 'rgba(68,138,255,.1)', border: 'rgba(68,138,255,.3)', text: 'var(--blue)' },
+  }
+
+  /* ── Render ────────────────────────────────────────────────────────────── */
   return (
-    <div className="screen" style={{ height: '100dvh', position: 'relative' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', overflow: 'hidden' }}>
 
-      {/* Map */}
-      <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
-
-      {/* Top HUD */}
-      <div className="map-overlay-top">
-        <div className="map-chip" style={{ display: 'flex', gap: 14, flex: 1, alignItems: 'center' }}>
-          <span style={{ color: 'var(--green)' }}>🏃 {runners.length}</span>
-          <span style={{ color: 'var(--red)' }}>🔴 {itPlayers.length}</span>
-          <span style={{ marginLeft: 'auto' }}>
-            <span className={`badge ${role === 'it' ? 'badge-red' : 'badge-green'}`}>
-              {role === 'it' ? 'IT' : 'RUNNER'}
-            </span>
+      {/* ── Top HUD bar ── */}
+      <div style={{
+        flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: 'calc(var(--safe-top) + 8px) 12px 10px',
+        background: 'rgba(0,0,0,.88)',
+        backdropFilter: 'blur(12px)',
+        borderBottom: '1px solid var(--border)',
+        zIndex: 10,
+      }}>
+        <span style={{ color: 'var(--green)', fontFamily: 'var(--font-display)', fontSize: 13 }}>
+          🏃 {activeRunners.length}
+        </span>
+        <span style={{ color: 'var(--red)', fontFamily: 'var(--font-display)', fontSize: 13 }}>
+          🔴 {itPlayers.length}
+        </span>
+        <span style={{ marginLeft: 'auto' }}>
+          <span className={`badge ${role === 'it' ? 'badge-red' : 'badge-green'}`}>
+            {role === 'it' ? 'IT' : 'RUNNER'}
           </span>
+        </span>
+        {outOfBounds && (
+          <span style={{
+            background: 'var(--red)', color: '#fff',
+            fontFamily: 'var(--font-display)', fontSize: 10,
+            letterSpacing: '0.08em', padding: '3px 8px',
+            borderRadius: 'var(--radius-pill)',
+            animation: 'pulse 1s ease-in-out infinite',
+          }}>
+            OUT OF BOUNDS
+          </span>
+        )}
+      </div>
+
+      {/* ── Map (fills remaining space) ── */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+
+        {/* Notification stack over map */}
+        <div style={{
+          position: 'absolute', top: 10, left: 10, right: 10,
+          zIndex: 20, display: 'flex', flexDirection: 'column', gap: 6,
+          pointerEvents: 'none',
+        }}>
+          {notifications.map(n => {
+            const c = notifColors[n.type] || notifColors.info
+            return (
+              <div key={n.id} style={{
+                background: c.bg,
+                border: `1px solid ${c.border}`,
+                borderRadius: 'var(--radius-sm)',
+                padding: '9px 14px',
+                fontFamily: 'var(--font-body)',
+                fontWeight: 600,
+                fontSize: 13,
+                color: c.text,
+                backdropFilter: 'blur(8px)',
+                animation: 'slideDown .2s ease',
+              }}>
+                {n.msg}
+              </div>
+            )
+          })}
         </div>
       </div>
 
-      {/* Out of bounds warning */}
-      {outOfBounds && (
-        <div style={{
-          position: 'absolute',
-          top: 'calc(var(--safe-top) + 64px)',
-          left: 12, right: 12, zIndex: 1000,
-          background: 'rgba(255,59,59,.92)',
-          borderRadius: 'var(--radius-sm)',
-          padding: '10px 16px',
-          textAlign: 'center',
-          fontFamily: 'var(--font-display)',
-          fontSize: 13,
-          letterSpacing: '0.06em',
-        }}>
-          ⚠ OUT OF BOUNDS — RETURN TO PLAY AREA
+      {/* ── Bottom control panel (solid, always visible) ── */}
+      <div style={{
+        flexShrink: 0,
+        background: 'var(--surface)',
+        borderTop: '1px solid var(--border)',
+        padding: '12px 12px calc(12px + var(--safe-bottom))',
+        display: 'flex', flexDirection: 'column', gap: 8,
+        zIndex: 10,
+      }}>
+
+        {/* Power-ups row */}
+        {myRolePowerUps.length > 0 && (
+          <div>
+            <div className="label" style={{ marginBottom: 8 }}>
+              Power-ups — tap to preview, hold to use
+            </div>
+            <div className="powerup-bar">
+              {[...new Set(myRolePowerUps)].map(type => {
+                const info = POWERUP_TYPES[type]
+                const count = myRolePowerUps.filter(t => t === type).length
+                return (
+                  <button
+                    key={type}
+                    className="powerup-btn"
+                    style={{ background: info.color + '18', borderColor: info.color + '55' }}
+                    onClick={() => setPowerUpInfo({ type, info })}
+                  >
+                    <span style={{ fontSize: 24 }}>{info.emoji}</span>
+                    {count > 1 && (
+                      <span style={{
+                        position: 'absolute', top: 3, right: 5,
+                        fontSize: 9, fontWeight: 700,
+                        fontFamily: 'var(--font-display)', color: '#fff',
+                      }}>×{count}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Reveal buttons — It only */}
+        {role === 'it' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="btn btn-ghost"
+              style={{ flex: 1, minHeight: 44, fontSize: 12, padding: '10px 8px' }}
+              disabled={myReveals <= 0}
+              onClick={() => handleReveal('REVEAL_RUNNER')}
+            >
+              📍 Reveal Runner <span style={{ color: 'var(--yellow)', marginLeft: 4 }}>({myReveals})</span>
+            </button>
+            <button
+              className="btn btn-ghost"
+              style={{ flex: 1, minHeight: 44, fontSize: 12, padding: '10px 8px' }}
+              disabled={myReveals <= 0}
+              onClick={() => handleReveal('CLUSTER_SCAN')}
+            >
+              👥 Clusters <span style={{ color: 'var(--yellow)', marginLeft: 4 }}>({myReveals})</span>
+            </button>
+          </div>
+        )}
+
+        {/* Tag button — It only */}
+        {role === 'it' && (
+          <button
+            className="btn btn-primary"
+            style={{ minHeight: 54, fontSize: 15 }}
+            onClick={() => setShowTagSheet(true)}
+            disabled={activeRunners.length === 0}
+          >
+            🏷️ Tag a Runner
+            {nearbyRunner && (
+              <span style={{
+                marginLeft: 8, fontSize: 11,
+                background: 'rgba(255,255,255,.2)',
+                padding: '2px 8px', borderRadius: 'var(--radius-pill)',
+              }}>
+                {nearbyRunner.name} nearby!
+              </span>
+            )}
+          </button>
+        )}
+      </div>
+
+      {/* ── Power-up description popup ── */}
+      {powerUpInfo && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 3000,
+            background: 'rgba(0,0,0,.7)',
+            display: 'flex', alignItems: 'flex-end',
+          }}
+          onClick={() => setPowerUpInfo(null)}
+        >
+          <div
+            style={{
+              width: '100%',
+              background: 'var(--surface)',
+              borderTop: `2px solid ${powerUpInfo.info.color}`,
+              borderRadius: 'var(--radius) var(--radius) 0 0',
+              padding: '24px 20px calc(24px + var(--safe-bottom))',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+              <div style={{
+                width: 56, height: 56, borderRadius: '50%',
+                background: powerUpInfo.info.color + '22',
+                border: `2px solid ${powerUpInfo.info.color}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 28,
+              }}>
+                {powerUpInfo.info.emoji}
+              </div>
+              <div>
+                <div style={{ fontFamily: 'var(--font-display)', fontSize: 18 }}>
+                  {powerUpInfo.info.label}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  {powerUpInfo.info.durationMs / 1000}s duration
+                </div>
+              </div>
+            </div>
+            <div style={{
+              fontSize: 15, color: 'var(--text-muted)',
+              lineHeight: 1.6, marginBottom: 20,
+            }}>
+              {powerUpInfo.info.description}
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setPowerUpInfo(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn"
+                style={{
+                  flex: 2,
+                  background: powerUpInfo.info.color,
+                  color: '#fff',
+                  boxShadow: `0 4px 24px ${powerUpInfo.info.color}44`,
+                }}
+                onClick={() => handleActivatePowerUp(powerUpInfo.type)}
+              >
+                Use {powerUpInfo.info.emoji} {powerUpInfo.info.label}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Toast */}
-      {notification && (
-        <div className="toast" style={{ top: outOfBounds ? 118 : 'calc(var(--safe-top) + 64px)' }}>
-          {notification}
+      {/* ── Tag selector sheet ── */}
+      {showTagSheet && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 3000,
+            background: 'rgba(0,0,0,.75)',
+            display: 'flex', alignItems: 'flex-end',
+          }}
+          onClick={() => setShowTagSheet(false)}
+        >
+          <div
+            style={{
+              width: '100%',
+              background: 'var(--surface)',
+              borderTop: '2px solid var(--red)',
+              borderRadius: 'var(--radius) var(--radius) 0 0',
+              padding: '20px 16px calc(20px + var(--safe-bottom))',
+              maxHeight: '70vh',
+              overflowY: 'auto',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="title" style={{ fontSize: 18, marginBottom: 6 }}>🏷️ Tag a Runner</div>
+            <div className="subtitle" style={{ fontSize: 13, marginBottom: 16 }}>
+              Select a runner to send them a tag request
+            </div>
+
+            {activeRunners.length === 0 ? (
+              <div className="subtitle" style={{ textAlign: 'center', padding: '20px 0' }}>
+                No active runners
+              </div>
+            ) : (
+              activeRunners.map(r => {
+                const dist = myLocation && r.location
+                  ? distanceMetres(myLocation, r.location)
+                  : null
+                const nearby = dist !== null && dist <= TAG_PROXIMITY_M
+                const immune = isImmune(game, r.id)
+                return (
+                  <div
+                    key={r.id}
+                    className="player-row"
+                    onClick={() => !immune && handleTagPlayer(r.id)}
+                    style={{
+                      cursor: immune ? 'not-allowed' : 'pointer',
+                      opacity: immune ? 0.5 : 1,
+                      padding: '12px 8px',
+                      margin: '0 -8px',
+                      borderRadius: 'var(--radius-sm)',
+                    }}
+                  >
+                    <div className="player-avatar" style={{
+                      background: 'rgba(0,230,118,.12)',
+                      border: `2px solid ${nearby ? 'var(--yellow)' : 'var(--green)'}`,
+                    }}>
+                      <span style={{ color: nearby ? 'var(--yellow)' : 'var(--green)' }}>
+                        {r.name[0].toUpperCase()}
+                      </span>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>{r.name}</div>
+                      {dist !== null && (
+                        <div style={{ fontSize: 12, color: nearby ? 'var(--yellow)' : 'var(--text-muted)' }}>
+                          {nearby ? `⚡ ${Math.round(dist)}m away` : `~${Math.round(dist)}m away`}
+                        </div>
+                      )}
+                    </div>
+                    {immune
+                      ? <span className="badge badge-blue">🛡️ Immune</span>
+                      : nearby
+                        ? <span className="badge badge-yellow">Nearby</span>
+                        : <span className="badge badge-green">Tag</span>}
+                  </div>
+                )
+              })
+            )}
+          </div>
         </div>
       )}
 
-      {/* Tag confirmation overlay */}
+      {/* ── Incoming tag confirmation overlay ── */}
       {tagRequest?.targetId === uid && (
         <div style={{
-          position: 'absolute', inset: 0,
+          position: 'fixed', inset: 0, zIndex: 4000,
           background: 'rgba(0,0,0,.92)',
-          zIndex: 2000,
           display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'center',
           gap: 20, padding: '32px 24px',
-          animation: 'fadeIn .2s ease',
         }}>
           <div style={{
             width: 90, height: 90, borderRadius: '50%',
@@ -315,19 +672,12 @@ export default function GameScreen() {
             boxShadow: '0 0 40px var(--red-glow)',
           }}>🏷️</div>
 
-          <div className="title" style={{ textAlign: 'center', color: 'var(--red)' }}>
-            TAGGED!
-          </div>
+          <div className="title" style={{ textAlign: 'center', color: 'var(--red)' }}>YOU'VE BEEN TAGGED!</div>
           <div className="subtitle" style={{ textAlign: 'center' }}>
             Confirm or dispute — auto-confirms in {tagCountdown}s
           </div>
 
-          {/* Countdown bar */}
-          <div style={{
-            width: '100%', height: 4,
-            background: 'var(--surface2)',
-            borderRadius: 2, overflow: 'hidden',
-          }}>
+          <div style={{ width: '100%', height: 4, background: 'var(--surface2)', borderRadius: 2, overflow: 'hidden' }}>
             <div style={{
               height: '100%',
               width: `${(tagCountdown / 5) * 100}%`,
@@ -338,120 +688,21 @@ export default function GameScreen() {
           </div>
 
           <div style={{ display: 'flex', gap: 12, width: '100%' }}>
-            <button
-              className="btn btn-ghost"
-              style={{ flex: 1 }}
-              onClick={() => { disputeTag(roomCode); setTagRequest(null); clearInterval(tagTimerRef.current) }}
-            >
+            <button className="btn btn-ghost" style={{ flex: 1 }}
+              onClick={() => { disputeTag(roomCode); setTagRequest(null); clearInterval(tagTimerRef.current) }}>
               Dispute
             </button>
-            <button
-              className="btn btn-primary"
-              style={{ flex: 1 }}
+            <button className="btn btn-primary" style={{ flex: 1 }}
               onClick={() => {
                 confirmTag(roomCode, uid, tagRequest.taggerId)
                 setTagRequest(null)
                 clearInterval(tagTimerRef.current)
-              }}
-            >
+              }}>
               Confirm Tag
             </button>
           </div>
         </div>
       )}
-
-      {/* Bottom controls */}
-      <div className="map-overlay-bottom">
-
-        {/* Power-ups */}
-        {myPowerUps.length > 0 && (
-          <div className="map-card">
-            <div className="label" style={{ marginBottom: 10 }}>Power-ups</div>
-            <div className="powerup-bar">
-              {[...new Set(myPowerUps)].map(type => {
-                const info = POWERUP_TYPES[type]
-                const count = myPowerUps.filter(t => t === type).length
-                const wrongRole = info.availableTo !== 'both' && info.availableTo !== role
-                return (
-                  <button
-                    key={type}
-                    className="powerup-btn"
-                    style={{ background: info.color + '18', borderColor: info.color + '44' }}
-                    onClick={() => handleActivatePowerUp(type)}
-                    disabled={wrongRole}
-                    title={info.description}
-                  >
-                    {info.emoji}
-                    {count > 1 && (
-                      <span style={{
-                        position: 'absolute', top: 2, right: 4,
-                        fontSize: 9, fontWeight: 700,
-                        fontFamily: 'var(--font-display)',
-                        color: '#fff',
-                      }}>×{count}</span>
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Reveal buttons (It only) */}
-        {role === 'it' && (
-          <div className="map-card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div className="label" style={{ marginBottom: 0 }}>Reveals</div>
-              <div style={{
-                fontFamily: 'var(--font-display)',
-                fontSize: 13,
-                color: myReveals > 0 ? 'var(--yellow)' : 'var(--text-muted)',
-              }}>
-                {myReveals} left
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn btn-ghost"
-                style={{ flex: 1, minHeight: 44, fontSize: 12, padding: '10px 8px' }}
-                disabled={myReveals <= 0}
-                onClick={() => handleReveal('REVEAL_RUNNER')}
-              >
-                📍 Runner
-              </button>
-              <button
-                className="btn btn-ghost"
-                style={{ flex: 1, minHeight: 44, fontSize: 12, padding: '10px 8px' }}
-                disabled={myReveals <= 0}
-                onClick={() => handleReveal('CLUSTER_SCAN')}
-              >
-                👥 Clusters
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Tag button (It only) */}
-        {role === 'it' && (
-          <button
-            className="btn btn-primary"
-            style={{
-              fontSize: 16,
-              minHeight: 58,
-              opacity: nearbyRunner ? 1 : 0.28,
-              background: nearbyRunner ? 'var(--red)' : 'var(--surface)',
-              boxShadow: nearbyRunner ? '0 4px 28px var(--red-glow)' : 'none',
-              border: nearbyRunner ? 'none' : '1px solid var(--border-light)',
-            }}
-            disabled={!nearbyRunner}
-            onClick={handleTag}
-          >
-            {nearbyRunner
-              ? `🏷️ TAG ${nearbyRunner.name.toUpperCase()}!`
-              : '🏷️ Get within 10m to tag'}
-          </button>
-        )}
-      </div>
     </div>
   )
 }
