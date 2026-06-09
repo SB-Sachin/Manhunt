@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectAllPlayers } from '../store/gameStore.js'
 import { subscribeToGame } from '../services/gameService.js'
 import { recordGameResult, ACHIEVEMENTS } from '../utils/stats.js'
+import { recordGameToCloud } from '../services/statsCloud.js'
+import { getAccount } from '../services/authService.js'
 
 const CONFETTI_COLORS = ['#ff3b3b', '#00e676', '#448aff', '#ffd600', '#d500f9', '#ff9100']
 
@@ -52,7 +54,7 @@ export default function GameOverScreen() {
       survivedSecs = Math.max(0, (endMs - liveStartMs) / 1000)
     }
 
-    const newly = recordGameResult({
+    const result = {
       gameCode: roomCode,
       mode: game.mode || 'classic',
       role: me.role,
@@ -61,8 +63,13 @@ export default function GameOverScreen() {
       survivedFullRound,
       survivedSecs,
       wasTagged: me.role === 'it' || me.isEliminated,
-    })
+    }
+    const newly = recordGameResult(result)
     if (newly.length) setUnlocked(newly)
+
+    // Mirror to the cloud if the player has an account (cross-device stats).
+    const account = getAccount()
+    if (account.signedIn) recordGameToCloud(account.uid, result).catch(() => {})
   }, [game?.status])
 
   const unlockedDefs = ACHIEVEMENTS.filter(a => unlocked.includes(a.id))

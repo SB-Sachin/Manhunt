@@ -10,6 +10,7 @@ import ProfileScreen from './screens/ProfileScreen.jsx'
 import JoinRoom from './screens/JoinRoom.jsx'
 import { useGameStore } from './store/gameStore.js'
 import { ensureAuth } from './services/gameService.js'
+import { signInSync } from './services/statsCloud.js'
 import { auth } from './services/firebase.js'
 import { onAuthStateChanged } from 'firebase/auth'
 
@@ -33,7 +34,11 @@ function SessionBoot({ children }) {
   useEffect(() => {
     ensureAuth().catch(() => {})
     const unsub = onAuthStateChanged(auth, (user) => {
-      if (user) setUid(user.uid)
+      if (user) {
+        setUid(user.uid)
+        // Logged-in (non-anonymous) → pull cloud stats onto this device.
+        if (!user.isAnonymous) signInSync(user.uid).catch(() => {})
+      }
     })
     return unsub
   }, [setUid])

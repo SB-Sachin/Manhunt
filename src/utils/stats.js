@@ -53,14 +53,16 @@ function markRecorded(gameCode) {
 }
 
 /*
- * Record one finished game. Returns the list of newly-unlocked achievement ids
- * (so the UI can celebrate them). No-op if this game code was already recorded.
+ * Pure: apply one game result to a stats object. Returns { stats, newlyUnlocked }
+ * without touching storage or de-duping. Shared by the local recorder and the
+ * cloud (Firestore) recorder so achievement rules live in exactly one place.
  */
-export function recordGameResult({ gameCode, mode, role, won, tags, survivedFullRound, survivedSecs, wasTagged }) {
-  if (gameCode && alreadyRecorded(gameCode)) return []
-  if (gameCode) markRecorded(gameCode)
-
-  const stats = getStats()
+export function applyResult(prev, { mode, won, tags, survivedFullRound, survivedSecs, wasTagged }) {
+  const stats = {
+    ...DEFAULT_STATS,
+    ...prev,
+    achievements: { ...(prev?.achievements || {}) },
+  }
   stats.gamesPlayed += 1
   stats.totalTags += tags || 0
   if (won) stats.wins += 1
@@ -83,9 +85,43 @@ export function recordGameResult({ gameCode, mode, role, won, tags, survivedFull
   if (stats.gamesPlayed >= 10) unlock('veteran')
   if (stats.wins >= 5) unlock('champion')
 
+  return { stats, newlyUnlocked }
+}
+
+/*
+ * Record one finished game to LOCAL storage. Returns newly-unlocked achievement
+ * ids (for celebration). No-op if this game code was already recorded here.
+ */
+export function recordGameResult(result) {
+  const { gameCode } = result
+  if (gameCode && alreadyRecorded(gameCode)) return []
+  if (gameCode) markRecorded(gameCode)
+
+  const { stats, newlyUnlocked } = applyResult(getStats(), result)
   saveStats(stats)
   return newlyUnlocked
 }
+
+/* Overwrite the local cache (used to mirror cloud stats onto the device). */
+export function setStatsRaw(stats) {
+  saveStats({ ...DEFAULT_STATS, ...stats, achievements: { ...(stats?.achievements || {}) } })
+}
+
+/* Combine two stats objects (first-login merge of device + cloud). */
+export function mergeStats(a = {}, b = {}) {
+  const merged = { ...DEFAULT_STATS }
+  merged.gamesPlayed = (a.gamesPlayed || 0) + (b.gamesPlayed || 0)
+  merged.wins = (a.wins || 0) + (b.wins || 0)
+  merged.totalTags = (a.totalTags || 0) + (b.totalTags || 0)
+  merged.longestSurvival = Math.max(a.longestSurvival || 0, b.longestSurvival || 0)
+  merged.achievements = { ...(b.achievements || {}) }
+  for (const [id, ts] of Object.entries(a.achievements || {})) {
+    merged.achievements[id] = Math.min(ts, merged.achievements[id] || Infinity)
+  }
+  return merged
+}
+
+export { DEFAULT_STATS }
 
 export function getAchievements() {
   const stats = getStats()
