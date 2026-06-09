@@ -103,12 +103,16 @@ export function authErrorMessage(code) {
     case 'auth/weak-password': return 'Password should be at least 6 characters.'
     case 'auth/wrong-password':
     case 'auth/invalid-credential': return 'Wrong password for that email.'
+    case 'auth/email-already-in-use': return 'That email already has an account — check the password.'
     case 'auth/popup-closed-by-user':
     case 'auth/cancelled-popup-request': return 'Sign-in was cancelled.'
     case 'auth/popup-blocked': return 'Your browser blocked the sign-in popup. Allow popups and try again.'
     case 'auth/requires-recent-login': return 'For security, please sign in again, then delete.'
     case 'auth/network-request-failed': return 'Network problem — check your connection.'
-    case 'auth/operation-not-allowed': return 'This sign-in method is not enabled yet.'
-    default: return 'Something went wrong. Please try again.'
+    case 'auth/operation-not-allowed': return 'Google/email sign-in is not enabled in Firebase yet.'
+    case 'auth/unauthorized-domain': return 'This site is not in Firebase’s Authorized domains list.'
+    case 'auth/internal-error': return 'Auth service error — check the provider is enabled in Firebase.'
+    // Surface anything unrecognised so it's actionable instead of silent.
+    default: return `Sign-in failed${code ? ` (${code})` : ''}. Please try again.`
   }
 }

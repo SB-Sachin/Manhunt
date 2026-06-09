@@ -24,9 +24,11 @@ export default function LeaderboardScreen() {
   useEffect(() => {
     let cancelled = false
     setRows(null); setError('')
-    fetchLeaderboard(metric, 50)
-      .then(r => { if (!cancelled) setRows(r) })
-      .catch(() => { if (!cancelled) setError('Could not load the leaderboard.') })
+    fetchLeaderboard(metric, 100)
+      // Only show players who've actually finished a game (hides brand-new,
+      // zero-stat accounts that were just created).
+      .then(r => { if (!cancelled) setRows(r.filter(p => (p.gamesPlayed || 0) > 0).slice(0, 50)) })
+      .catch((e) => { console.error('[leaderboard]', e.code, e); if (!cancelled) setError('Could not load the leaderboard.') })
     return () => { cancelled = true }
   }, [metric])
 

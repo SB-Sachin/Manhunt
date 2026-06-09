@@ -40,6 +40,7 @@ export default function ProfileScreen() {
       setPassword('')
       refresh()
     } catch (e) {
+      console.error('[auth]', e.code, e.message, e)
       setError(authErrorMessage(e.code))
     } finally {
       setBusy(false)
