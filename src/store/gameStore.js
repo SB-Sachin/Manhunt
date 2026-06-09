@@ -32,3 +32,7 @@ export const selectItPlayers = (state) =>
 
 export const selectAllPlayers = (state) =>
   Object.values(state.game?.players ?? {})
+
+// Real (phone-carrying) players only — excludes honor-system ghosts
+export const selectRealPlayers = (state) =>
+  Object.values(state.game?.players ?? {}).filter(p => !p.isGhost)

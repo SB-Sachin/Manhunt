@@ -1,6 +1,6 @@
 import {
   doc, setDoc, updateDoc, onSnapshot,
-  serverTimestamp, getDoc, arrayUnion, runTransaction
+  serverTimestamp, getDoc, arrayUnion, runTransaction, deleteField
 } from 'firebase/firestore'
 import { signInAnonymously } from 'firebase/auth'
 import { db, auth } from './firebase.js'
@@ -108,6 +108,8 @@ export async function startDispersal(code) {
   await updateDoc(doc(db, 'games', code), {
     status: 'DISPERSAL',
     dispersalStartedAt: serverTimestamp(),
+    dispersalPausedAt: null,
+    dispersalPausedMs: 0,
   })
 }
 
@@ -248,6 +250,95 @@ export async function confirmTag(code, targetId, taggerId) {
 
 export async function disputeTag(code) {
   await updateDoc(doc(db, 'games', code), { tagRequest: null })
+}
+
+/* ── Ghost players (phoneless — honor-system) ──────────────────────────────── */
+
+export async function addGhostPlayer(code, name, addedBy) {
+  const ghostId = `ghost_${Math.random().toString(36).slice(2, 10)}`
+  const ghost = {
+    id: ghostId,
+    name,
+    role: 'runner',
+    isEliminated: false,
+    location: null,
+    tagCount: 0,
+    powerUps: [],
+    revealsLeft: 0,
+    isHost: false,
+    isGhost: true,
+    addedBy,
+    joinedAt: Date.now(),
+  }
+  await updateDoc(doc(db, 'games', code), { [`players.${ghostId}`]: ghost })
+  return ghostId
+}
+
+/* ── Admin controls (host only) ────────────────────────────────────────────── */
+
+export async function kickPlayer(code, playerId) {
+  await updateDoc(doc(db, 'games', code), { [`players.${playerId}`]: deleteField() })
+}
+
+export async function renamePlayer(code, playerId, newName) {
+  await updateDoc(doc(db, 'games', code), { [`players.${playerId}.name`]: newName })
+}
+
+export async function reassignRole(code, playerId, newRole) {
+  await updateDoc(doc(db, 'games', code), {
+    [`players.${playerId}.role`]: newRole,
+    [`players.${playerId}.revealsLeft`]: newRole === 'it' ? 3 : 0,
+  })
+}
+
+export async function eliminatePlayer(code, playerId) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+
+    const updates = { [`players.${playerId}.isEliminated`]: true }
+
+    // If only one runner would remain, end the game
+    const remaining = Object.values(game.players).filter(
+      p => p.role === 'runner' && !p.isEliminated && p.id !== playerId
+    )
+    if (remaining.length === 1) {
+      updates.status = 'GAME_OVER'
+      updates.winner = remaining[0].id
+    }
+
+    tx.update(ref, updates)
+  })
+}
+
+export async function forceEndGame(code, winnerId = null) {
+  await updateDoc(doc(db, 'games', code), {
+    status: 'GAME_OVER',
+    winner: winnerId,
+    tagRequest: null,
+  })
+}
+
+/* ── Dispersal pause / resume (host only) ──────────────────────────────────── */
+
+export async function pauseDispersal(code) {
+  await updateDoc(doc(db, 'games', code), { dispersalPausedAt: Date.now() })
+}
+
+export async function resumeDispersal(code) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+    if (!game.dispersalPausedAt) return
+
+    const pausedMs = (game.dispersalPausedMs || 0) + (Date.now() - game.dispersalPausedAt)
+    tx.update(ref, {
+      dispersalPausedAt: null,
+      dispersalPausedMs: pausedMs,
+    })
+  })
 }
 
 export async function replenishPowerUps(code, boundary) {

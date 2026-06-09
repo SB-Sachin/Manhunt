@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useGameStore, selectMyRole, selectItPlayers, selectRunners } from '../store/gameStore.js'
+import { useGameStore, selectMyRole, selectItPlayers, selectRunners, selectIsHost } from '../store/gameStore.js'
 import {
   subscribeToGame, tagPlayer, confirmTag, disputeTag,
   collectPowerUp, activatePowerUp, useReveal, replenishPowerUps,
@@ -8,6 +8,7 @@ import {
 import { useLocationTracking } from '../hooks/useLocation.js'
 import { distanceMetres, computeClusters, pointInPolygon } from '../utils/geo.js'
 import { POWERUP_TYPES, getActiveEffect, isImmune } from '../utils/powerups.js'
+import AdminSheet from '../components/AdminSheet.jsx'
 
 const TAG_PROXIMITY_M = 20          // soft proximity hint (not a hard gate)
 const POWERUP_COLLECT_RADIUS_M = 15
@@ -30,11 +31,14 @@ export default function GameScreen() {
   const role = useGameStore(selectMyRole)
   const itPlayers = useGameStore(selectItPlayers)
   const runners = useGameStore(selectRunners)
+  const isHost = useGameStore(selectIsHost)
+  const allPlayers = Object.values(game?.players ?? {})
 
   const [tagRequest, setTagRequest] = useState(null)
   const [tagCountdown, setTagCountdown] = useState(5)
   const [outOfBounds, setOutOfBounds] = useState(false)
   const [showTagSheet, setShowTagSheet] = useState(false)
+  const [showAdmin, setShowAdmin] = useState(false)
   const [powerUpInfo, setPowerUpInfo] = useState(null)   // {type, info} for description popup
   const [notifications, pushNotification] = useNotifications()
 
@@ -311,6 +315,12 @@ export default function GameScreen() {
       pushNotification(`🛡️ ${runner.name} has immunity — can't be tagged!`, 'warning')
       return
     }
+    // Ghost (phoneless) players can't confirm — honor-system instant tag
+    if (runner.isGhost) {
+      await confirmTag(roomCode, runnerId, uid)
+      pushNotification(`🏷️ Tagged ${runner.name} (honor system)`, 'info')
+      return
+    }
     await tagPlayer(roomCode, uid, runnerId)
     pushNotification(`Tag request sent to ${runner.name}!`, 'info')
   }
@@ -377,6 +387,15 @@ export default function GameScreen() {
             {role === 'it' ? 'IT' : 'RUNNER'}
           </span>
         </span>
+        {isHost && (
+          <button
+            className="btn-pill"
+            style={{ minHeight: 30, padding: '5px 12px' }}
+            onClick={() => setShowAdmin(true)}
+          >
+            🛠️
+          </button>
+        )}
         {outOfBounds && (
           <span style={{
             background: 'var(--red)', color: '#fff',
@@ -635,7 +654,11 @@ export default function GameScreen() {
                     </div>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 600 }}>{r.name}</div>
-                      {dist !== null && (
+                      {r.isGhost ? (
+                        <div style={{ fontSize: 12, color: 'var(--purple)' }}>
+                          👻 Phoneless — tag on sight
+                        </div>
+                      ) : dist !== null && (
                         <div style={{ fontSize: 12, color: nearby ? 'var(--yellow)' : 'var(--text-muted)' }}>
                           {nearby ? `⚡ ${Math.round(dist)}m away` : `~${Math.round(dist)}m away`}
                         </div>
@@ -643,9 +666,11 @@ export default function GameScreen() {
                     </div>
                     {immune
                       ? <span className="badge badge-blue">🛡️ Immune</span>
-                      : nearby
-                        ? <span className="badge badge-yellow">Nearby</span>
-                        : <span className="badge badge-green">Tag</span>}
+                      : r.isGhost
+                        ? <span className="badge badge-purple">👻 Tag</span>
+                        : nearby
+                          ? <span className="badge badge-yellow">Nearby</span>
+                          : <span className="badge badge-green">Tag</span>}
                   </div>
                 )
               })
@@ -702,6 +727,17 @@ export default function GameScreen() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* ── Host admin sheet ── */}
+      {showAdmin && isHost && (
+        <AdminSheet
+          roomCode={roomCode}
+          uid={uid}
+          players={allPlayers}
+          phase="game"
+          onClose={() => setShowAdmin(false)}
+        />
       )}
     </div>
   )

@@ -1,13 +1,21 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useGameStore, selectIsHost, selectAllPlayers } from '../store/gameStore.js'
-import { subscribeToGame } from '../services/gameService.js'
+import { useGameStore, selectIsHost, selectAllPlayers, selectRealPlayers } from '../store/gameStore.js'
+import { subscribeToGame, addGhostPlayer, kickPlayer, renamePlayer } from '../services/gameService.js'
+import AdminSheet from '../components/AdminSheet.jsx'
 
 export default function LobbyScreen() {
   const navigate = useNavigate()
   const { roomCode, uid, setGame } = useGameStore()
   const isHost = useGameStore(selectIsHost)
   const players = useGameStore(selectAllPlayers)
+  const realPlayers = useGameStore(selectRealPlayers)
+
+  const [showAdmin, setShowAdmin] = useState(false)
+  const [addingGhost, setAddingGhost] = useState(false)
+  const [ghostName, setGhostName] = useState('')
+  const [editingId, setEditingId] = useState(null)
+  const [editName, setEditName] = useState('')
 
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
@@ -20,57 +28,163 @@ export default function LobbyScreen() {
     return unsub
   }, [roomCode])
 
+  async function handleAddGhost() {
+    const name = ghostName.trim()
+    if (!name) return
+    await addGhostPlayer(roomCode, name, uid)
+    setGhostName('')
+    setAddingGhost(false)
+  }
+
+  async function saveRename() {
+    const name = editName.trim()
+    if (name && editingId) await renamePlayer(roomCode, editingId, name)
+    setEditingId(null)
+    setEditName('')
+  }
+
+  // A ghost I added — I can manage it even if I'm not host
+  const canManageGhost = (p) => p.isGhost && (isHost || p.addedBy === uid)
+
+  // "Need 2 real players" gate — ghosts can't carry the game alone
+  const enoughPlayers = realPlayers.length >= 2
+
   return (
     <div className="screen screen-padded">
 
       {/* Header */}
-      <div>
-        <div className="label">Room Code</div>
-        <div className="room-code">{roomCode}</div>
-        <div className="subtitle" style={{ marginTop: 6 }}>
-          Share this code with your friends
+      <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1 }}>
+          <div className="label">Room Code</div>
+          <div className="room-code">{roomCode}</div>
+          <div className="subtitle" style={{ marginTop: 6 }}>
+            Share this code with your friends
+          </div>
         </div>
+        {isHost && (
+          <button
+            className="btn-pill"
+            style={{ marginTop: 6 }}
+            onClick={() => setShowAdmin(true)}
+          >
+            🛠️ Admin
+          </button>
+        )}
       </div>
 
       <div className="divider" />
 
       {/* Player list */}
-      <div className="card" style={{ flex: 1 }}>
+      <div className="card" style={{ flex: 1, overflowY: 'auto' }}>
         <div className="label" style={{ marginBottom: 4 }}>
           Players — {players.length} joined
         </div>
-        {players.map(p => (
-          <div key={p.id} className="player-row">
-            <div
-              className="player-avatar"
-              style={{ background: avatarColor(p.name) + '22', border: `2px solid ${avatarColor(p.name)}` }}
-            >
-              <span style={{ color: avatarColor(p.name) }}>{p.name[0].toUpperCase()}</span>
+        {players.map(p => {
+          const isEditing = editingId === p.id
+          return (
+            <div key={p.id} className="player-row" style={{ flexWrap: 'wrap' }}>
+              <div
+                className="player-avatar"
+                style={{ background: avatarColor(p.name) + '22', border: `2px solid ${avatarColor(p.name)}` }}
+              >
+                <span style={{ color: avatarColor(p.name) }}>{p.name[0].toUpperCase()}</span>
+              </div>
+
+              {isEditing ? (
+                <input
+                  className="input"
+                  style={{ flex: 1, minHeight: 42 }}
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  maxLength={20}
+                  autoFocus
+                />
+              ) : (
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{p.name}</div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {isEditing ? (
+                  <button className="btn-pill active" style={{ minHeight: 36 }} onClick={saveRename}>
+                    Save
+                  </button>
+                ) : (
+                  <>
+                    {p.isHost && <span className="badge badge-yellow">Host</span>}
+                    {p.id === uid && <span className="badge badge-blue">You</span>}
+                    {p.isGhost && <span className="badge badge-purple">👻 Ghost</span>}
+                    {/* Inline manage for a ghost I own (non-host shortcut) */}
+                    {!isHost && canManageGhost(p) && (
+                      <>
+                        <button
+                          className="btn-pill"
+                          style={{ minHeight: 34, padding: '6px 10px' }}
+                          onClick={() => { setEditingId(p.id); setEditName(p.name) }}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          className="btn-pill"
+                          style={{ minHeight: 34, padding: '6px 10px', borderColor: 'rgba(255,59,59,.4)', color: 'var(--red)' }}
+                          onClick={() => kickPlayer(roomCode, p.id)}
+                        >
+                          🚫
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: 15 }}>{p.name}</div>
-            </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {p.isHost && <span className="badge badge-yellow">Host</span>}
-              {p.id === uid && <span className="badge badge-blue">You</span>}
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
+
+      {/* Add ghost player */}
+      {addingGhost ? (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="label" style={{ marginBottom: 0 }}>👻 Add a phoneless player</div>
+          <div className="subtitle" style={{ fontSize: 12, marginTop: -4 }}>
+            They play on the honor system — no map dot, no power-ups, tagged manually by "It".
+          </div>
+          <input
+            className="input"
+            placeholder="Player name"
+            value={ghostName}
+            onChange={e => setGhostName(e.target.value)}
+            maxLength={20}
+            autoFocus
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setAddingGhost(false); setGhostName('') }}>
+              Cancel
+            </button>
+            <button className="btn btn-primary" style={{ flex: 2 }} disabled={!ghostName.trim()} onClick={handleAddGhost}>
+              Add Ghost Player
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button className="btn btn-ghost" onClick={() => setAddingGhost(true)}>
+          👻 Add Phoneless Player
+        </button>
+      )}
 
       {/* CTA */}
       {isHost ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <button
             className="btn btn-primary"
-            disabled={players.length < 2}
+            disabled={!enoughPlayers}
             onClick={() => navigate('/setup')}
           >
             Setup Game →
           </button>
-          {players.length < 2 && (
+          {!enoughPlayers && (
             <p className="subtitle" style={{ textAlign: 'center' }}>
-              Waiting for at least 2 players
+              Need at least 2 players with phones
             </p>
           )}
         </div>
@@ -80,6 +194,17 @@ export default function LobbyScreen() {
             Waiting for host to start the game…
           </div>
         </div>
+      )}
+
+      {/* Admin sheet */}
+      {showAdmin && isHost && (
+        <AdminSheet
+          roomCode={roomCode}
+          uid={uid}
+          players={players}
+          phase="lobby"
+          onClose={() => setShowAdmin(false)}
+        />
       )}
     </div>
   )

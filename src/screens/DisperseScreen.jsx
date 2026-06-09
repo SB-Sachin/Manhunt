@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectMyRole, selectIsHost } from '../store/gameStore.js'
-import { subscribeToGame, startLive } from '../services/gameService.js'
+import { subscribeToGame, startLive, pauseDispersal, resumeDispersal } from '../services/gameService.js'
 import { useLocationTracking } from '../hooks/useLocation.js'
 
 export default function DisperseScreen() {
@@ -23,20 +23,28 @@ export default function DisperseScreen() {
     return unsub
   }, [roomCode])
 
+  const isPaused = !!game?.dispersalPausedAt
+
   useEffect(() => {
     if (!game?.dispersalStartedAt || !game?.dispersalSecs) return
     const startMs = game.dispersalStartedAt?.toMillis?.() ?? game.dispersalStartedAt
-    const endMs = startMs + game.dispersalSecs * 1000
 
     const tick = () => {
+      // Frozen time accumulated across pauses, plus the live pause-in-progress
+      const pausedMs = (game.dispersalPausedMs || 0)
+        + (game.dispersalPausedAt ? Date.now() - game.dispersalPausedAt : 0)
+      const endMs = startMs + game.dispersalSecs * 1000 + pausedMs
       const remaining = Math.max(0, Math.ceil((endMs - Date.now()) / 1000))
       setSecondsLeft(remaining)
-      if (remaining <= 0 && isHost) startLive(roomCode, game.boundary).catch(() => {})
+      // Don't auto-start while paused
+      if (remaining <= 0 && isHost && !game.dispersalPausedAt) {
+        startLive(roomCode, game.boundary).catch(() => {})
+      }
     }
     tick()
     const id = setInterval(tick, 500)
     return () => clearInterval(id)
-  }, [game?.dispersalStartedAt, game?.dispersalSecs, isHost, roomCode])
+  }, [game?.dispersalStartedAt, game?.dispersalSecs, game?.dispersalPausedAt, game?.dispersalPausedMs, isHost, roomCode])
 
   const isIt = role === 'it'
   const mins = secondsLeft != null ? Math.floor(secondsLeft / 60) : '--'
@@ -87,9 +95,22 @@ export default function DisperseScreen() {
           {mins}:{secs}
         </div>
         <div className="subtitle" style={{ marginTop: 10 }}>
-          {isIt ? 'until the chase begins' : 'until "It" is released'}
+          {isPaused
+            ? '⏸ Paused by host'
+            : isIt ? 'until the chase begins' : 'until "It" is released'}
         </div>
       </div>
+
+      {/* Host pause / resume */}
+      {isHost && (
+        <button
+          className={`btn ${isPaused ? 'btn-green' : 'btn-secondary'}`}
+          style={{ width: '100%' }}
+          onClick={() => (isPaused ? resumeDispersal(roomCode) : pauseDispersal(roomCode))}
+        >
+          {isPaused ? '▶ Resume Timer' : '⏸ Pause Timer'}
+        </button>
+      )}
 
       {/* Info card */}
       <div
