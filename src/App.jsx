@@ -5,6 +5,7 @@ import SetupScreen from './screens/SetupScreen.jsx'
 import DisperseScreen from './screens/DisperseScreen.jsx'
 import GameScreen from './screens/GameScreen.jsx'
 import GameOverScreen from './screens/GameOverScreen.jsx'
+import ProfileScreen from './screens/ProfileScreen.jsx'
 import { useGameStore } from './store/gameStore.js'
 
 function RequireSession({ children }) {
@@ -17,6 +18,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<HomeScreen />} />
+      <Route path="/profile" element={<ProfileScreen />} />
       <Route path="/lobby" element={<RequireSession><LobbyScreen /></RequireSession>} />
       <Route path="/setup" element={<RequireSession><SetupScreen /></RequireSession>} />
       <Route path="/dispersal" element={<RequireSession><DisperseScreen /></RequireSession>} />

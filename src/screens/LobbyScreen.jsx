@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectIsHost, selectAllPlayers, selectRealPlayers } from '../store/gameStore.js'
-import { subscribeToGame, addGhostPlayer, kickPlayer, renamePlayer, setDispersalDuration } from '../services/gameService.js'
+import {
+  subscribeToGame, addGhostPlayer, kickPlayer, renamePlayer,
+  setDispersalDuration, setGameMode, setRoundDuration, setProximityWarnings,
+} from '../services/gameService.js'
 import AdminSheet from '../components/AdminSheet.jsx'
 
 export default function LobbyScreen() {
@@ -142,6 +145,66 @@ export default function LobbyScreen() {
           )
         })}
       </div>
+
+      {/* Game mode (host) — syncs to all players */}
+      {isHost && (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="label" style={{ marginBottom: 0 }}>🎮 Game mode</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className={`btn ${(game?.mode ?? 'classic') === 'classic' ? 'btn-primary' : 'btn-ghost'}`}
+              style={{ flex: 1, minHeight: 46, fontSize: 12 }}
+              onClick={() => setGameMode(roomCode, 'classic')}
+            >
+              Classic
+            </button>
+            <button
+              className={`btn ${game?.mode === 'survival' ? 'btn-primary' : 'btn-ghost'}`}
+              style={{ flex: 1, minHeight: 46, fontSize: 12 }}
+              onClick={() => setGameMode(roomCode, 'survival')}
+            >
+              Survival
+            </button>
+          </div>
+          <div className="subtitle" style={{ fontSize: 12 }}>
+            {game?.mode === 'survival'
+              ? 'Tagged runners are eliminated, "It" stays "It", the zone shrinks, and the round is timed. Last survivor wins.'
+              : 'Tagged runners join "It". Last runner standing wins.'}
+          </div>
+
+          {game?.mode === 'survival' && (
+            <>
+              <div className="label" style={{ marginBottom: 0, marginTop: 4 }}>
+                Round length — {formatDuration(game?.roundSecs)}
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[300, 600, 900, 1200].map(secs => (
+                  <button
+                    key={secs}
+                    className={`btn-pill ${game?.roundSecs === secs ? 'active' : ''}`}
+                    style={{ flex: '1 0 auto' }}
+                    onClick={() => setRoundDuration(roomCode, secs)}
+                  >
+                    {formatDuration(secs)}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={game?.proximityWarnings !== false}
+              onChange={e => setProximityWarnings(roomCode, e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: 'var(--red)' }}
+            />
+            <span style={{ fontSize: 13 }}>
+              Danger sense — runners feel a pulse when "It" is near
+            </span>
+          </label>
+        </div>
+      )}
 
       {/* Dispersal timer (host) — syncs to all players */}
       {isHost && (

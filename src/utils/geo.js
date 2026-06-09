@@ -51,6 +51,27 @@ export function randomPointInPolygon(polygon) {
   return polygon[0]
 }
 
+// Centroid (average vertex) of a polygon
+export function polygonCentroid(polygon) {
+  if (!polygon || !polygon.length) return null
+  const sum = polygon.reduce(
+    (acc, p) => ({ lat: acc.lat + p.lat, lng: acc.lng + p.lng }),
+    { lat: 0, lng: 0 }
+  )
+  return { lat: sum.lat / polygon.length, lng: sum.lng / polygon.length }
+}
+
+// Shrink a polygon toward its centroid. factor 0 = unchanged, 1 = collapsed.
+export function shrinkPolygon(polygon, factor) {
+  if (!polygon || polygon.length < 3 || !factor) return polygon
+  const c = polygonCentroid(polygon)
+  const t = Math.max(0, Math.min(1, factor))
+  return polygon.map(p => ({
+    lat: p.lat + (c.lat - p.lat) * t,
+    lng: p.lng + (c.lng - p.lng) * t,
+  }))
+}
+
 // Compute simple cluster centres from player locations
 export function computeClusters(players, radiusMetres = 50) {
   const locations = Object.values(players)

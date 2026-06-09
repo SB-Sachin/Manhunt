@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectMyRole, selectIsHost } from '../store/gameStore.js'
 import { subscribeToGame, startLive, pauseDispersal, resumeDispersal } from '../services/gameService.js'
 import { useLocationTracking } from '../hooks/useLocation.js'
+import { feedback } from '../utils/feedback.js'
 
 export default function DisperseScreen() {
   const navigate = useNavigate()
@@ -10,8 +11,25 @@ export default function DisperseScreen() {
   const role = useGameStore(selectMyRole)
   const isHost = useGameStore(selectIsHost)
   const [secondsLeft, setSecondsLeft] = useState(null)
+  const [showReveal, setShowReveal] = useState(true)
+  const lastBeepRef = useRef(null)
 
   useLocationTracking(roomCode, uid, true)
+
+  // Role-reveal splash on first mount
+  useEffect(() => {
+    const t = setTimeout(() => setShowReveal(false), 1950)
+    return () => clearTimeout(t)
+  }, [])
+
+  // Countdown beeps for the final 3 seconds
+  useEffect(() => {
+    if (secondsLeft == null || secondsLeft > 3 || game?.dispersalPausedAt) return
+    if (lastBeepRef.current === secondsLeft) return
+    lastBeepRef.current = secondsLeft
+    if (secondsLeft === 0) feedback.go()
+    else feedback.beep()
+  }, [secondsLeft])
 
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
@@ -49,6 +67,8 @@ export default function DisperseScreen() {
   const accent = isIt ? 'var(--red)' : 'var(--green)'
   const glowColor = isIt ? 'var(--red-glow)' : 'var(--green-glow)'
 
+  const showBigCount = secondsLeft != null && secondsLeft <= 3 && !game?.dispersalPausedAt
+
   return (
     <div
       className="screen screen-padded"
@@ -59,6 +79,35 @@ export default function DisperseScreen() {
         background: `radial-gradient(ellipse at 50% 40%, ${glowColor} 0%, transparent 65%), var(--bg)`,
       }}
     >
+      {/* Role-reveal splash */}
+      {showReveal && (
+        <div
+          className="role-reveal"
+          style={{ background: `radial-gradient(ellipse at center, ${glowColor} 0%, rgba(0,0,0,.96) 70%)` }}
+        >
+          <div className="role-reveal-icon">{isIt ? '🔴' : '🏃'}</div>
+          <div className="title-lg" style={{ color: accent }}>
+            {isIt ? 'YOU ARE IT' : 'YOU ARE A RUNNER'}
+          </div>
+          <div className="subtitle" style={{ maxWidth: 280 }}>
+            {isIt ? 'Hunt down every runner once the timer hits zero' : 'Hide and survive — don’t get tagged!'}
+          </div>
+        </div>
+      )}
+
+      {/* Big 3·2·1·GO overlay */}
+      {showBigCount && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 5500,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(0,0,0,.45)', pointerEvents: 'none',
+        }}>
+          <div key={secondsLeft} className="count-big" style={{ color: secondsLeft === 0 ? accent : '#fff' }}>
+            {secondsLeft === 0 ? 'GO!' : secondsLeft}
+          </div>
+        </div>
+      )}
+
       {/* Icon + role */}
       <div style={{ textAlign: 'center' }}>
         <div style={{

@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { createGame, joinGame } from '../services/gameService.js'
 import { useGameStore } from '../store/gameStore.js'
 import { requestLocationPermission } from '../hooks/useLocation.js'
+import { primeAudio } from '../utils/sound.js'
+import SoundToggle from '../components/SoundToggle.jsx'
 
 export default function HomeScreen() {
   const navigate = useNavigate()
@@ -47,6 +49,17 @@ export default function HomeScreen() {
       minHeight: '100dvh',
       background: 'radial-gradient(ellipse at 50% 0%, rgba(255,59,59,.08) 0%, transparent 60%), var(--bg)',
     }}>
+      {/* Top utility row */}
+      <div style={{
+        position: 'absolute', top: 'calc(var(--safe-top) + 14px)', right: 16, left: 16,
+        display: 'flex', justifyContent: 'space-between',
+      }}>
+        <button className="btn-pill" onClick={() => { primeAudio(); navigate('/profile') }}>
+          📊 Stats
+        </button>
+        <div onClick={primeAudio}><SoundToggle variant="pill" /></div>
+      </div>
+
       {/* Hero */}
       <div style={{ textAlign: 'center' }}>
         <div style={{

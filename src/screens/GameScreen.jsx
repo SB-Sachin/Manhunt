@@ -4,15 +4,20 @@ import { useGameStore, selectMyRole, selectItPlayers, selectRunners, selectIsHos
 import {
   subscribeToGame, tagPlayer, confirmTag, disputeTag,
   collectPowerUp, activatePowerUp, useReveal, replenishPowerUps,
+  endByTimeout, eliminatePlayer,
 } from '../services/gameService.js'
 import { useLocationTracking } from '../hooks/useLocation.js'
-import { distanceMetres, computeClusters, pointInPolygon } from '../utils/geo.js'
+import { distanceMetres, computeClusters, pointInPolygon, shrinkPolygon } from '../utils/geo.js'
 import { POWERUP_TYPES, getActiveEffect, isImmune } from '../utils/powerups.js'
+import { feedback } from '../utils/feedback.js'
 import AdminSheet from '../components/AdminSheet.jsx'
+import SoundToggle from '../components/SoundToggle.jsx'
 
 const TAG_PROXIMITY_M = 20          // soft proximity hint (not a hard gate)
 const POWERUP_COLLECT_RADIUS_M = 15
 const POWERUP_REPLENISH_MS = 3 * 60 * 1000
+const DANGER_RADIUS_M = 35          // runner "danger sense" range
+const OUT_OF_ZONE_GRACE_MS = 15000  // survival: time outside shrunk zone before elimination
 
 /* Escape user-supplied names before injecting into marker HTML */
 function escapeHtml(s) {
@@ -48,6 +53,8 @@ export default function GameScreen() {
   const [showAdmin, setShowAdmin] = useState(false)
   const [powerUpInfo, setPowerUpInfo] = useState(null)   // {type, info} for description popup
   const [notifications, pushNotification] = useNotifications()
+  const [roundLeft, setRoundLeft] = useState(null)       // survival round seconds remaining
+  const [dangerLevel, setDangerLevel] = useState(0)      // 0..1 proximity intensity (runners)
 
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
@@ -58,6 +65,10 @@ export default function GameScreen() {
   const tagTimerRef = useRef(null)
   const lastReplenishRef = useRef(Date.now())
   const hasCenteredRef = useRef(false)
+  const outsideSinceRef = useRef(null)       // when I first left the zone (survival)
+  const selfEliminatedRef = useRef(false)
+  const lastDangerBuzzRef = useRef(0)
+  const prevOutOfBoundsRef = useRef(false)
 
   // Track previous game state for diffing (notifications)
   const prevGameRef = useRef(null)
@@ -77,19 +88,27 @@ export default function GameScreen() {
         // Someone just got tagged → both sides get a notification
         const prevTag = prev.tagRequest
         const newTag = g.tagRequest
-        if (prevTag?.status === 'pending' && !newTag) {
-          // Tag was resolved — find who changed role to 'it'
-          Object.values(g.players).forEach(p => {
-            const was = prev.players?.[p.id]
-            if (was?.role === 'runner' && p.role === 'it') {
-              if (p.id === uid) {
-                pushNotification('🏷️ You were tagged! You are now "It"', 'danger')
-              } else {
-                pushNotification(`🏷️ ${p.name} was tagged and is now "It"`, 'warning')
-              }
+        // Classic: someone converted to "It"
+        Object.values(g.players).forEach(p => {
+          const was = prev.players?.[p.id]
+          if (was?.role === 'runner' && p.role === 'it') {
+            if (p.id === uid) {
+              feedback.tag()
+              pushNotification('🏷️ You were tagged! You are now "It"', 'danger')
+            } else {
+              pushNotification(`🏷️ ${p.name} was tagged and is now "It"`, 'warning')
             }
-          })
-        }
+          }
+          // Survival: someone was eliminated
+          if (was && !was.isEliminated && p.isEliminated) {
+            if (p.id === uid) {
+              feedback.eliminated()
+              pushNotification('☠️ You were tagged — eliminated!', 'danger')
+            } else {
+              pushNotification(`☠️ ${p.name} was eliminated`, 'warning')
+            }
+          }
+        })
 
         // Power-up collected by me
         const myPrev = prev.players?.[uid]?.powerUps || []
@@ -97,6 +116,7 @@ export default function GameScreen() {
         if (myCurr.length > myPrev.length) {
           const newType = myCurr[myCurr.length - 1]
           const info = POWERUP_TYPES[newType]
+          feedback.pickup()
           pushNotification(`${info?.emoji} Picked up ${info?.label}!`, 'success')
         }
 
@@ -121,6 +141,7 @@ export default function GameScreen() {
         // Game over — winner just set
         if (!prev.winner && g.winner) {
           if (g.winner === uid) {
+            feedback.win()
             pushNotification('🏆 YOU WIN — Last runner standing!', 'success')
           } else {
             const winner = g.players?.[g.winner]
@@ -231,6 +252,94 @@ export default function GameScreen() {
     }
   }, [game?.boundary, mapRef.current])
 
+  /* ── Live tick: round timer, shrinking zone, out-of-bounds ─────────────── */
+  useEffect(() => {
+    if (!game?.boundary?.length) return
+    const survival = game.mode === 'survival'
+
+    const tick = () => {
+      // Current play boundary (shrinks over time in survival)
+      let boundary = game.boundary
+      if (survival && game.shrinkStartAt && game.shrinkDurationSecs) {
+        const elapsed = (Date.now() - game.shrinkStartAt) / 1000
+        const factor = (game.maxShrink || 0) * Math.min(1, elapsed / game.shrinkDurationSecs)
+        boundary = shrinkPolygon(game.boundary, factor)
+        // Reflect the shrunk shape on the map
+        if (boundaryLayerRef.current) {
+          boundaryLayerRef.current.setLatLngs(boundary.map(p => [p.lat, p.lng]))
+        }
+      }
+
+      // Out-of-bounds for me
+      const myLoc = game.players?.[uid]?.location
+      const me = game.players?.[uid]
+      const amIActive = me && !me.isEliminated && me.role === 'runner'
+      if (myLoc && boundary.length > 2) {
+        const inside = pointInPolygon(myLoc, boundary)
+        setOutOfBounds(!inside)
+
+        // Survival: leaving the shrinking zone too long eliminates you
+        if (survival && amIActive) {
+          if (!inside) {
+            if (!outsideSinceRef.current) outsideSinceRef.current = Date.now()
+            else if (Date.now() - outsideSinceRef.current > OUT_OF_ZONE_GRACE_MS && !selfEliminatedRef.current) {
+              selfEliminatedRef.current = true
+              feedback.eliminated()
+              pushNotification('☠️ You left the zone too long — eliminated!', 'danger')
+              eliminatePlayer(roomCode, uid).catch(() => {})
+            }
+          } else {
+            outsideSinceRef.current = null
+          }
+        }
+      }
+
+      // Survival round timer
+      if (survival && game.liveEndsAt) {
+        const remaining = Math.max(0, Math.ceil((game.liveEndsAt - Date.now()) / 1000))
+        setRoundLeft(remaining)
+        if (remaining <= 0 && isHost) endByTimeout(roomCode).catch(() => {})
+      } else {
+        setRoundLeft(null)
+      }
+    }
+
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [game?.boundary, game?.mode, game?.shrinkStartAt, game?.shrinkDurationSecs,
+      game?.maxShrink, game?.liveEndsAt, game?.players?.[uid]?.location, isHost, roomCode])
+
+  /* ── Out-of-bounds haptic on entering the danger state ─────────────────── */
+  useEffect(() => {
+    if (outOfBounds && !prevOutOfBoundsRef.current) feedback.warning()
+    prevOutOfBoundsRef.current = outOfBounds
+  }, [outOfBounds])
+
+  /* ── Proximity "danger sense" for runners ──────────────────────────────── */
+  useEffect(() => {
+    if (role !== 'runner' || game?.proximityWarnings === false) { setDangerLevel(0); return }
+    const myLoc = game?.players?.[uid]?.location
+    if (!myLoc) { setDangerLevel(0); return }
+
+    let nearest = Infinity
+    itPlayers.forEach(it => {
+      if (it.location) nearest = Math.min(nearest, distanceMetres(myLoc, it.location))
+    })
+
+    if (nearest > DANGER_RADIUS_M) { setDangerLevel(0); return }
+    // 0 at edge of range → 1 when right on top of you
+    const level = 1 - nearest / DANGER_RADIUS_M
+    setDangerLevel(level)
+
+    // Escalating buzz/sound: closer = more frequent
+    const interval = 1400 - level * 1100   // 1400ms far → 300ms close
+    if (Date.now() - lastDangerBuzzRef.current > interval) {
+      lastDangerBuzzRef.current = Date.now()
+      feedback.warning()
+    }
+  }, [game?.players, role, itPlayers, game?.proximityWarnings])
+
   /* ── Update player markers ─────────────────────────────────────────────── */
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.players) return
@@ -249,7 +358,7 @@ export default function GameScreen() {
         map.setView([myLoc.lat, myLoc.lng], 18, { animate: true })
         hasCenteredRef.current = true
       }
-      if (game.boundary?.length > 2) setOutOfBounds(!pointInPolygon(myLoc, game.boundary))
+      // out-of-bounds is computed in the live-tick effect (handles shrinking zone)
     }
 
     const visible = {}
@@ -451,11 +560,21 @@ export default function GameScreen() {
         <span style={{ color: 'var(--red)', fontFamily: 'var(--font-display)', fontSize: 13 }}>
           🔴 {itPlayers.length}
         </span>
+        {roundLeft != null && (
+          <span style={{
+            fontFamily: 'var(--font-display)', fontSize: 13,
+            color: roundLeft <= 30 ? 'var(--red)' : 'var(--yellow)',
+            animation: roundLeft <= 30 ? 'pulse 1s ease-in-out infinite' : 'none',
+          }}>
+            ⏱ {Math.floor(roundLeft / 60)}:{String(roundLeft % 60).padStart(2, '0')}
+          </span>
+        )}
         <span style={{ marginLeft: 'auto' }}>
           <span className={`badge ${role === 'it' ? 'badge-red' : 'badge-green'}`}>
             {role === 'it' ? 'IT' : 'RUNNER'}
           </span>
         </span>
+        <SoundToggle variant="pill" />
         {isHost && (
           <button
             className="btn-pill"
@@ -481,6 +600,11 @@ export default function GameScreen() {
       {/* ── Map (fills remaining space) ── */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+
+        {/* Proximity danger vignette (runners) */}
+        {dangerLevel > 0 && (
+          <div className="danger-vignette" style={{ opacity: 0.25 + dangerLevel * 0.75 }} />
+        )}
 
         {/* Recenter button */}
         <button

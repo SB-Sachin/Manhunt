@@ -42,11 +42,18 @@ export async function createGame(hostName, dispersalSecs) {
     status: 'LOBBY',
     players: { [user.uid]: hostPlayer },
     boundary: [],
+    mode: 'classic',            // 'classic' | 'survival'
+    roundSecs: 600,             // survival round length
+    proximityWarnings: true,    // runner "danger sense"
     dispersalSecs,
     dispersalStartedAt: null,
     dispersalEndsAt: null,
     dispersalPausedAt: null,
     liveStartedAt: null,
+    liveEndsAt: null,
+    shrinkStartAt: null,
+    shrinkDurationSecs: null,
+    maxShrink: 0,
     winner: null,
     powerUpSpawns: [],
     createdAt: serverTimestamp(),
@@ -111,6 +118,19 @@ export async function setDispersalDuration(code, secs) {
   await updateDoc(doc(db, 'games', code), { dispersalSecs: secs })
 }
 
+// Pre-game settings (host) — all sync live to every player
+export async function setGameMode(code, mode) {
+  await updateDoc(doc(db, 'games', code), { mode })
+}
+
+export async function setRoundDuration(code, secs) {
+  await updateDoc(doc(db, 'games', code), { roundSecs: secs })
+}
+
+export async function setProximityWarnings(code, enabled) {
+  await updateDoc(doc(db, 'games', code), { proximityWarnings: enabled })
+}
+
 export async function startDispersal(code) {
   await runTransaction(db, async (tx) => {
     const ref = doc(db, 'games', code)
@@ -128,13 +148,51 @@ export async function startDispersal(code) {
 }
 
 export async function startLive(code, boundary) {
-  const gameRef = doc(db, 'games', code)
-  // Spawn first power-up
-  const spawns = spawnPowerUps(boundary, 2)
-  await updateDoc(gameRef, {
-    status: 'LIVE',
-    liveStartedAt: serverTimestamp(),
-    powerUpSpawns: spawns,
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+    if (!game || game.status === 'LIVE') return   // guard against double-start
+
+    const spawns = spawnPowerUps(boundary, 2)
+    const updates = {
+      status: 'LIVE',
+      liveStartedAt: serverTimestamp(),
+      powerUpSpawns: spawns,
+    }
+
+    // Survival: round timer + shrinking zone (computed client-side from these)
+    if (game.mode === 'survival') {
+      const roundSecs = game.roundSecs || 600
+      updates.liveEndsAt = Date.now() + roundSecs * 1000
+      updates.shrinkStartAt = Date.now()
+      updates.shrinkDurationSecs = roundSecs
+      updates.maxShrink = 0.6
+    }
+
+    tx.update(ref, updates)
+  })
+}
+
+// Survival round timer expired — rank survivors and end the game
+export async function endByTimeout(code) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+    if (!game || game.status !== 'LIVE') return
+
+    // Survivors (not eliminated runners) outrank the eliminated; among
+    // survivors the winner is arbitrary (all made it) — pick most tags / first.
+    const survivors = Object.values(game.players)
+      .filter(p => p.role === 'runner' && !p.isEliminated)
+    const winner = survivors.sort((a, b) => (b.tagCount || 0) - (a.tagCount || 0))[0]
+
+    tx.update(ref, {
+      status: 'GAME_OVER',
+      winner: winner?.id || null,
+      tagRequest: null,
+    })
   })
 }
 
@@ -240,22 +298,35 @@ export async function confirmTag(code, targetId, taggerId) {
     const ref = doc(db, 'games', code)
     const snap = await tx.get(ref)
     const game = snap.data()
+    const survival = game.mode === 'survival'
 
     const updates = {
       tagRequest: null,
-      [`players.${targetId}.role`]: 'it',
-      [`players.${targetId}.revealsLeft`]: 3,
       [`players.${taggerId}.tagCount`]: (game.players[taggerId]?.tagCount || 0) + 1,
     }
 
-    // Check if game should end
-    const runners = Object.values(game.players).filter(
+    if (survival) {
+      // Survival: the runner is eliminated; the tagger stays "It"
+      updates[`players.${targetId}.isEliminated`] = true
+      updates[`players.${targetId}.eliminatedAt`] = Date.now()
+    } else {
+      // Classic: the runner is converted to "It"
+      updates[`players.${targetId}.role`] = 'it'
+      updates[`players.${targetId}.revealsLeft`] = 3
+    }
+
+    // Game ends when only one runner remains (classic) / none remain (survival)
+    const remaining = Object.values(game.players).filter(
       p => p.role === 'runner' && !p.isEliminated && p.id !== targetId
     )
 
-    if (runners.length === 1) {
+    if (survival && remaining.length === 0) {
       updates.status = 'GAME_OVER'
-      updates.winner = runners[0].id
+      // Last one eliminated survived longest → winner
+      updates.winner = game.players[targetId]?.id || null
+    } else if (!survival && remaining.length === 1) {
+      updates.status = 'GAME_OVER'
+      updates.winner = remaining[0].id
     }
 
     tx.update(ref, updates)
@@ -310,14 +381,21 @@ export async function eliminatePlayer(code, playerId) {
     const ref = doc(db, 'games', code)
     const snap = await tx.get(ref)
     const game = snap.data()
+    const survival = game.mode === 'survival'
 
-    const updates = { [`players.${playerId}.isEliminated`]: true }
+    const updates = {
+      [`players.${playerId}.isEliminated`]: true,
+      [`players.${playerId}.eliminatedAt`]: Date.now(),
+    }
 
-    // If only one runner would remain, end the game
     const remaining = Object.values(game.players).filter(
       p => p.role === 'runner' && !p.isEliminated && p.id !== playerId
     )
-    if (remaining.length === 1) {
+    // Survival ends when no runners remain; classic when one remains
+    if (survival && remaining.length === 0) {
+      updates.status = 'GAME_OVER'
+      updates.winner = playerId
+    } else if (!survival && remaining.length === 1) {
       updates.status = 'GAME_OVER'
       updates.winner = remaining[0].id
     }
