@@ -2,12 +2,15 @@ import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectIsHost, selectAllPlayers } from '../store/gameStore.js'
 import { subscribeToGame, setBoundary, setItPlayers, startDispersal } from '../services/gameService.js'
+import { usePresence } from '../hooks/useLocation.js'
 
 export default function SetupScreen() {
   const navigate = useNavigate()
   const { roomCode, uid, setGame } = useGameStore()
   const isHost = useGameStore(selectIsHost)
   const players = useGameStore(selectAllPlayers)
+
+  usePresence(roomCode, uid)
 
   const [step, setStep] = useState('boundary')
   const [selectedIt, setSelectedIt] = useState([])

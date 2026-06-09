@@ -6,7 +6,7 @@ import {
   collectPowerUp, activatePowerUp, useReveal, replenishPowerUps,
   endByTimeout, eliminatePlayer,
 } from '../services/gameService.js'
-import { useLocationTracking } from '../hooks/useLocation.js'
+import { useLocationTracking, usePresence } from '../hooks/useLocation.js'
 import { distanceMetres, computeClusters, pointInPolygon, shrinkPolygon } from '../utils/geo.js'
 import { POWERUP_TYPES, getActiveEffect, isImmune } from '../utils/powerups.js'
 import { feedback } from '../utils/feedback.js'
@@ -74,6 +74,7 @@ export default function GameScreen() {
   const prevGameRef = useRef(null)
 
   useLocationTracking(roomCode, uid, true)
+  usePresence(roomCode, uid)
 
   /* ── Firestore subscription ────────────────────────────────────────────── */
   useEffect(() => {

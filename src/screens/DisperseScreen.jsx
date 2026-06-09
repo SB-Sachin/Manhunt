@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectMyRole, selectIsHost } from '../store/gameStore.js'
 import { subscribeToGame, startLive, pauseDispersal, resumeDispersal } from '../services/gameService.js'
-import { useLocationTracking } from '../hooks/useLocation.js'
+import { useLocationTracking, usePresence } from '../hooks/useLocation.js'
 import { feedback } from '../utils/feedback.js'
 
 export default function DisperseScreen() {
@@ -15,6 +15,7 @@ export default function DisperseScreen() {
   const lastBeepRef = useRef(null)
 
   useLocationTracking(roomCode, uid, true)
+  usePresence(roomCode, uid)
 
   // Role-reveal splash on first mount
   useEffect(() => {

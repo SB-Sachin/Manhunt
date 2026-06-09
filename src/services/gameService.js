@@ -88,6 +88,60 @@ export async function joinGame(code, playerName) {
   return { code: code.toUpperCase(), uid: user.uid }
 }
 
+/* Look up a game for rejoin-on-reload. Returns { game, isMember, name } so the
+   caller can decide: silently rejoin, prompt to join, or refuse. */
+export async function lookupGame(code) {
+  const user = await ensureAuth()
+  const snap = await getDoc(doc(db, 'games', code.toUpperCase()))
+  if (!snap.exists()) return { game: null, isMember: false, name: null, uid: user.uid }
+  const game = snap.data()
+  const me = game.players?.[user.uid]
+  return { game, isMember: !!me, name: me?.name ?? null, uid: user.uid }
+}
+
+/* Presence heartbeat — lets others detect a vanished host. Cheap single-field write. */
+export async function heartbeat(code, uid) {
+  if (!code || !uid) return
+  try {
+    await updateDoc(doc(db, 'games', code), { [`players.${uid}.lastSeen`]: Date.now() })
+  } catch { /* player may have been removed; ignore */ }
+}
+
+const HOST_STALE_MS = 45000
+
+/* If the current host hasn't been seen in HOST_STALE_MS, promote the
+   earliest-joined active non-ghost player. Safe under concurrency (transaction).
+   Any client may call this opportunistically. */
+export async function reassignHostIfStale(code) {
+  try {
+    await runTransaction(db, async (tx) => {
+      const ref = doc(db, 'games', code)
+      const snap = await tx.get(ref)
+      if (!snap.exists()) return
+      const game = snap.data()
+      if (game.status === 'GAME_OVER') return
+
+      const host = game.players?.[game.hostId]
+      const now = Date.now()
+      // Host still present & recently seen → nothing to do.
+      if (host && (now - (host.lastSeen || host.joinedAt || 0) < HOST_STALE_MS)) return
+
+      // Pick the earliest-joined, recently-seen, real (non-ghost) candidate.
+      const candidates = Object.values(game.players || {})
+        .filter(p => !p.isGhost && p.id !== game.hostId && !p.isEliminated)
+        .filter(p => now - (p.lastSeen || p.joinedAt || 0) < HOST_STALE_MS)
+        .sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0))
+
+      const next = candidates[0]
+      if (!next) return
+
+      const updates = { hostId: next.id, [`players.${next.id}.isHost`]: true }
+      if (host) updates[`players.${game.hostId}.isHost`] = false
+      tx.update(ref, updates)
+    })
+  } catch { /* another client likely won the race; ignore */ }
+}
+
 export function subscribeToGame(code, callback) {
   const gameRef = doc(db, 'games', code)
   return onSnapshot(gameRef, (snap) => {

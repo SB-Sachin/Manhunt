@@ -1,11 +1,18 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getStats, getAchievements } from '../utils/stats.js'
+import { getStats, getAchievements, clearStats } from '../utils/stats.js'
 
 export default function ProfileScreen() {
   const navigate = useNavigate()
+  const [confirmReset, setConfirmReset] = useState(false)
   const stats = getStats()
   const achievements = getAchievements()
   const unlockedCount = achievements.filter(a => a.unlocked).length
+
+  function handleReset() {
+    clearStats()
+    setConfirmReset(false)   // re-render re-reads cleared stats
+  }
 
   const longest = stats.longestSurvival
     ? `${Math.floor(stats.longestSurvival / 60)}:${String(stats.longestSurvival % 60).padStart(2, '0')}`
@@ -70,6 +77,35 @@ export default function ProfileScreen() {
           ))}
         </div>
       </div>
+
+      {/* Reset stats */}
+      {confirmReset ? (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10, borderColor: 'rgba(255,59,59,.3)' }}>
+          <div className="subtitle" style={{ textAlign: 'center' }}>
+            Wipe all stats and achievements on this device? This can't be undone.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmReset(false)}>
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary"
+              style={{ flex: 1 }}
+              onClick={handleReset}
+            >
+              Reset everything
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          className="btn btn-ghost"
+          style={{ borderColor: 'rgba(255,59,59,.35)', color: 'var(--red)' }}
+          onClick={() => setConfirmReset(true)}
+        >
+          🗑️ Reset stats
+        </button>
+      )}
 
       <button className="btn btn-primary" onClick={() => navigate('/')}>
         Back to Home

@@ -6,6 +6,7 @@ import {
   setDispersalDuration, setGameMode, setRoundDuration, setProximityWarnings,
 } from '../services/gameService.js'
 import AdminSheet from '../components/AdminSheet.jsx'
+import { usePresence } from '../hooks/useLocation.js'
 
 export default function LobbyScreen() {
   const navigate = useNavigate()
@@ -14,12 +15,24 @@ export default function LobbyScreen() {
   const players = useGameStore(selectAllPlayers)
   const realPlayers = useGameStore(selectRealPlayers)
 
+  usePresence(roomCode, uid)
+
   const [showAdmin, setShowAdmin] = useState(false)
   const [addingGhost, setAddingGhost] = useState(false)
   const [ghostName, setGhostName] = useState('')
   const [editingId, setEditingId] = useState(null)
   const [editName, setEditName] = useState('')
   const [customMins, setCustomMins] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  async function copyInviteLink() {
+    const link = `${window.location.origin}/g/${roomCode}`
+    try {
+      await navigator.clipboard.writeText(link)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch { /* clipboard blocked; ignore */ }
+  }
 
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
@@ -61,8 +74,15 @@ export default function LobbyScreen() {
         <div style={{ flex: 1 }}>
           <div className="label">Room Code</div>
           <div className="room-code">{roomCode}</div>
-          <div className="subtitle" style={{ marginTop: 6 }}>
-            Share this code with your friends
+          <button
+            className="btn-pill"
+            style={{ marginTop: 10 }}
+            onClick={copyInviteLink}
+          >
+            {copied ? '✓ Link copied!' : '🔗 Copy invite link'}
+          </button>
+          <div className="subtitle" style={{ marginTop: 8 }}>
+            Share the code or link — tapping the link rejoins after a reload
           </div>
         </div>
         {isHost && (

@@ -91,3 +91,12 @@ export function getAchievements() {
   const stats = getStats()
   return ACHIEVEMENTS.map(a => ({ ...a, unlocked: !!stats.achievements[a.id] }))
 }
+
+/* Wipe all device-local progression — stats, achievements, and the
+   recorded-games de-dupe list. Used by the "Reset stats" button. */
+export function clearStats() {
+  try {
+    localStorage.removeItem(STATS_KEY)
+    localStorage.removeItem(RECORDED_KEY)
+  } catch { /* ignore */ }
+}
