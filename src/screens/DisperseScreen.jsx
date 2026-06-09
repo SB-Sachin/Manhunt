@@ -26,25 +26,22 @@ export default function DisperseScreen() {
   const isPaused = !!game?.dispersalPausedAt
 
   useEffect(() => {
-    if (!game?.dispersalStartedAt || !game?.dispersalSecs) return
-    const startMs = game.dispersalStartedAt?.toMillis?.() ?? game.dispersalStartedAt
+    if (!game?.dispersalEndsAt) return
 
     const tick = () => {
-      // Frozen time accumulated across pauses, plus the live pause-in-progress
-      const pausedMs = (game.dispersalPausedMs || 0)
-        + (game.dispersalPausedAt ? Date.now() - game.dispersalPausedAt : 0)
-      const endMs = startMs + game.dispersalSecs * 1000 + pausedMs
-      const remaining = Math.max(0, Math.ceil((endMs - Date.now()) / 1000))
+      // While paused, freeze at the remaining time captured at pause moment.
+      const reference = game.dispersalPausedAt || Date.now()
+      const remaining = Math.max(0, Math.ceil((game.dispersalEndsAt - reference) / 1000))
       setSecondsLeft(remaining)
-      // Don't auto-start while paused
+      // Auto-start the live game when time runs out (host only, not while paused)
       if (remaining <= 0 && isHost && !game.dispersalPausedAt) {
         startLive(roomCode, game.boundary).catch(() => {})
       }
     }
     tick()
-    const id = setInterval(tick, 500)
+    const id = setInterval(tick, 250)
     return () => clearInterval(id)
-  }, [game?.dispersalStartedAt, game?.dispersalSecs, game?.dispersalPausedAt, game?.dispersalPausedMs, isHost, roomCode])
+  }, [game?.dispersalEndsAt, game?.dispersalPausedAt, isHost, roomCode])
 
   const isIt = role === 'it'
   const mins = secondsLeft != null ? Math.floor(secondsLeft / 60) : '--'

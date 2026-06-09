@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectIsHost, selectAllPlayers, selectRealPlayers } from '../store/gameStore.js'
-import { subscribeToGame, addGhostPlayer, kickPlayer, renamePlayer } from '../services/gameService.js'
+import { subscribeToGame, addGhostPlayer, kickPlayer, renamePlayer, setDispersalDuration } from '../services/gameService.js'
 import AdminSheet from '../components/AdminSheet.jsx'
 
 export default function LobbyScreen() {
   const navigate = useNavigate()
-  const { roomCode, uid, setGame } = useGameStore()
+  const { roomCode, uid, setGame, game } = useGameStore()
   const isHost = useGameStore(selectIsHost)
   const players = useGameStore(selectAllPlayers)
   const realPlayers = useGameStore(selectRealPlayers)
@@ -16,6 +16,7 @@ export default function LobbyScreen() {
   const [ghostName, setGhostName] = useState('')
   const [editingId, setEditingId] = useState(null)
   const [editName, setEditName] = useState('')
+  const [customMins, setCustomMins] = useState('')
 
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
@@ -142,6 +143,49 @@ export default function LobbyScreen() {
         })}
       </div>
 
+      {/* Dispersal timer (host) — syncs to all players */}
+      {isHost && (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="label" style={{ marginBottom: 0 }}>
+            ⏱ Dispersal timer — {formatDuration(game?.dispersalSecs)}
+          </div>
+          <div className="subtitle" style={{ fontSize: 12, marginTop: -4 }}>
+            How long runners get to scatter before "It" is released
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {[30, 60, 120, 180, 300].map(secs => (
+              <button
+                key={secs}
+                className={`btn-pill ${game?.dispersalSecs === secs ? 'active' : ''}`}
+                style={{ flex: '1 0 auto' }}
+                onClick={() => { setDispersalDuration(roomCode, secs); setCustomMins('') }}
+              >
+                {formatDuration(secs)}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="input"
+              style={{ flex: 1, minHeight: 44 }}
+              type="number"
+              min="1"
+              placeholder="Custom minutes"
+              value={customMins}
+              onChange={e => setCustomMins(e.target.value)}
+            />
+            <button
+              className="btn btn-secondary"
+              style={{ width: 'auto', padding: '0 18px' }}
+              disabled={!customMins || Number(customMins) <= 0}
+              onClick={() => setDispersalDuration(roomCode, Math.round(Number(customMins) * 60))}
+            >
+              Set
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Add ghost player */}
       {addingGhost ? (
         <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -215,4 +259,12 @@ function avatarColor(name) {
   let hash = 0
   for (const c of name) hash = (hash * 31 + c.charCodeAt(0)) & 0xffffffff
   return colors[Math.abs(hash) % colors.length]
+}
+
+function formatDuration(secs) {
+  if (!secs) return '2m'
+  if (secs < 60) return `${secs}s`
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return s ? `${m}m ${s}s` : `${m}m`
 }

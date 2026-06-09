@@ -33,6 +33,7 @@ export default function SetupScreen() {
   useEffect(() => {
     if (!isHost || step !== 'boundary') return
     if (mapRef.current) return
+    let resizeObserver = null
 
     import('leaflet').then((L) => {
       LRef.current = L
@@ -46,7 +47,10 @@ export default function SetupScreen() {
         tapTolerance: 15,
       }).setView([37.7749, -122.4194], 16)
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 20,
+        subdomains: 'abcd',
+      }).addTo(map)
 
       navigator.geolocation.getCurrentPosition(pos => {
         map.setView([pos.coords.latitude, pos.coords.longitude], 17)
@@ -57,9 +61,20 @@ export default function SetupScreen() {
       })
 
       mapRef.current = map
+
+      // Fix blank-map-in-flexbox: re-measure after mount + on resize
+      const refresh = () => map.invalidateSize()
+      requestAnimationFrame(refresh)
+      setTimeout(refresh, 200)
+      setTimeout(refresh, 600)
+      if ('ResizeObserver' in window) {
+        resizeObserver = new ResizeObserver(refresh)
+        resizeObserver.observe(container)
+      }
     })
 
     return () => {
+      resizeObserver?.disconnect()
       if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
       dotMarkersRef.current = []
       polylineRef.current = null

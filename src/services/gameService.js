@@ -44,6 +44,8 @@ export async function createGame(hostName, dispersalSecs) {
     boundary: [],
     dispersalSecs,
     dispersalStartedAt: null,
+    dispersalEndsAt: null,
+    dispersalPausedAt: null,
     liveStartedAt: null,
     winner: null,
     powerUpSpawns: [],
@@ -104,12 +106,24 @@ export async function setItPlayers(code, itPlayerIds, revealsPerIt) {
   await updateDoc(gameRef, updated)
 }
 
+// Set the dispersal duration (seconds) before the game starts — syncs to all
+export async function setDispersalDuration(code, secs) {
+  await updateDoc(doc(db, 'games', code), { dispersalSecs: secs })
+}
+
 export async function startDispersal(code) {
-  await updateDoc(doc(db, 'games', code), {
-    status: 'DISPERSAL',
-    dispersalStartedAt: serverTimestamp(),
-    dispersalPausedAt: null,
-    dispersalPausedMs: 0,
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const secs = snap.data()?.dispersalSecs || 120
+    tx.update(ref, {
+      status: 'DISPERSAL',
+      dispersalStartedAt: serverTimestamp(),
+      // Absolute client-epoch end time — every device reads the same number,
+      // so the countdown stays in sync without server/client clock mixing.
+      dispersalEndsAt: Date.now() + secs * 1000,
+      dispersalPausedAt: null,
+    })
   })
 }
 
@@ -323,6 +337,7 @@ export async function forceEndGame(code, winnerId = null) {
 /* ── Dispersal pause / resume (host only) ──────────────────────────────────── */
 
 export async function pauseDispersal(code) {
+  // Record the moment we paused so the remaining time can be frozen
   await updateDoc(doc(db, 'games', code), { dispersalPausedAt: Date.now() })
 }
 
@@ -331,12 +346,13 @@ export async function resumeDispersal(code) {
     const ref = doc(db, 'games', code)
     const snap = await tx.get(ref)
     const game = snap.data()
-    if (!game.dispersalPausedAt) return
+    if (!game.dispersalPausedAt || !game.dispersalEndsAt) return
 
-    const pausedMs = (game.dispersalPausedMs || 0) + (Date.now() - game.dispersalPausedAt)
+    // Push the end time forward by however long we were paused
+    const pausedFor = Date.now() - game.dispersalPausedAt
     tx.update(ref, {
+      dispersalEndsAt: game.dispersalEndsAt + pausedFor,
       dispersalPausedAt: null,
-      dispersalPausedMs: pausedMs,
     })
   })
 }

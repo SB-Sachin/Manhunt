@@ -14,6 +14,13 @@ const TAG_PROXIMITY_M = 20          // soft proximity hint (not a hard gate)
 const POWERUP_COLLECT_RADIUS_M = 15
 const POWERUP_REPLENISH_MS = 3 * 60 * 1000
 
+/* Escape user-supplied names before injecting into marker HTML */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
 /* ── Notification queue hook ──────────────────────────────────────────────── */
 function useNotifications() {
   const [queue, setQueue] = useState([])
@@ -50,6 +57,7 @@ export default function GameScreen() {
   const LRef = useRef(null)
   const tagTimerRef = useRef(null)
   const lastReplenishRef = useRef(Date.now())
+  const hasCenteredRef = useRef(false)
 
   // Track previous game state for diffing (notifications)
   const prevGameRef = useRef(null)
@@ -154,23 +162,45 @@ export default function GameScreen() {
   /* ── Init Leaflet map ──────────────────────────────────────────────────── */
   useEffect(() => {
     if (mapRef.current) return
+    let resizeObserver = null
+
     import('leaflet').then((L) => {
       LRef.current = L
       const container = mapContainerRef.current
       if (!container || mapRef.current) return
 
       const map = L.map(container, {
-        zoomControl: false,
+        zoomControl: true,
         attributionControl: false,
         tap: true,
         tapTolerance: 15,
       }).setView([37.7749, -122.4194], 17)
+      map.zoomControl.setPosition('topright')
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map)
+      // Carto Voyager — far clearer streets/labels than raw OSM tiles
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        maxZoom: 20,
+        subdomains: 'abcd',
+      }).addTo(map)
+
       mapRef.current = map
+
+      // FIX: container is laid out by flexbox, so it often has zero size at
+      // init → grey/blank map. Force Leaflet to re-measure once mounted, and
+      // again on any container resize (keyboard, rotation, sheet open/close).
+      const refresh = () => map.invalidateSize()
+      requestAnimationFrame(refresh)
+      setTimeout(refresh, 200)
+      setTimeout(refresh, 600)
+
+      if ('ResizeObserver' in window) {
+        resizeObserver = new ResizeObserver(refresh)
+        resizeObserver.observe(container)
+      }
     })
 
     return () => {
+      resizeObserver?.disconnect()
       mapRef.current?.remove()
       mapRef.current = null
       markersRef.current = {}
@@ -179,13 +209,26 @@ export default function GameScreen() {
     }
   }, [])
 
+  // Recenter map on me
+  const recenter = useCallback(() => {
+    const myLoc = game?.players?.[uid]?.location
+    if (myLoc && mapRef.current) {
+      mapRef.current.setView([myLoc.lat, myLoc.lng], 18, { animate: true })
+    }
+  }, [game?.players, uid])
+
   /* ── Draw boundary once ────────────────────────────────────────────────── */
   useEffect(() => {
     if (!mapRef.current || !LRef.current || !game?.boundary?.length || boundaryLayerRef.current) return
-    boundaryLayerRef.current = LRef.current.polygon(
+    const L = LRef.current
+    boundaryLayerRef.current = L.polygon(
       game.boundary.map(p => [p.lat, p.lng]),
-      { color: '#ff3b3b', weight: 2, fillOpacity: 0.06 }
+      { color: '#ff3b3b', weight: 3, fillOpacity: 0.05, dashArray: '10 6' }
     ).addTo(mapRef.current)
+    // Fit the map to the whole play area once so players see the full boundary
+    if (!hasCenteredRef.current) {
+      mapRef.current.fitBounds(boundaryLayerRef.current.getBounds(), { padding: [40, 40] })
+    }
   }, [game?.boundary, mapRef.current])
 
   /* ── Update player markers ─────────────────────────────────────────────── */
@@ -200,7 +243,12 @@ export default function GameScreen() {
     const activeCluster = getActiveEffect(game, 'CLUSTER_SCAN')
 
     if (myLoc) {
-      map.setView([myLoc.lat, myLoc.lng], map.getZoom(), { animate: true })
+      // Center on the player only the first time we get a fix — afterwards the
+      // user is free to pan/zoom; the recenter button brings them back.
+      if (!hasCenteredRef.current) {
+        map.setView([myLoc.lat, myLoc.lng], 18, { animate: true })
+        hasCenteredRef.current = true
+      }
       if (game.boundary?.length > 2) setOutOfBounds(!pointInPolygon(myLoc, game.boundary))
     }
 
@@ -212,24 +260,36 @@ export default function GameScreen() {
     }
     if (role === 'runner' && activeRevealIt) itPlayers.forEach(p => { visible[p.id] = p })
 
+    const buildIcon = (player, isMe) => {
+      const cls = isMe ? 'map-marker-self' : player.role === 'it' ? 'map-marker-it' : 'map-marker-runner'
+      const label = isMe ? 'YOU' : player.name
+      return L.divIcon({
+        className: '',
+        html: `<div class="map-marker ${cls}">
+          ${isMe ? '<div class="map-marker-pulse"></div>' : ''}
+          <div class="map-marker-dot"></div>
+          <div class="map-marker-label">${escapeHtml(label)}</div>
+        </div>`,
+        iconSize: [60, 40],
+        iconAnchor: [30, 10],
+      })
+    }
+
     const seen = new Set()
     Object.entries(visible).forEach(([pid, player]) => {
       if (!player?.location) return
       seen.add(pid)
       const isMe = pid === uid
-      const color = isMe ? '#448aff' : player.role === 'it' ? '#ff3b3b' : '#00e676'
-      const radius = isMe ? 11 : 9
       const latlng = [player.location.lat, player.location.lng]
 
       if (markersRef.current[pid]) {
         markersRef.current[pid].setLatLng(latlng)
-        markersRef.current[pid].setStyle({ fillColor: color, radius })
+        markersRef.current[pid].setIcon(buildIcon(player, isMe))
       } else {
-        markersRef.current[pid] = L.circleMarker(latlng, {
-          radius, color: '#000', weight: 2, fillColor: color, fillOpacity: 1,
-        })
-          .bindTooltip(isMe ? 'You' : player.name, { permanent: false, direction: 'top' })
-          .addTo(map)
+        markersRef.current[pid] = L.marker(latlng, {
+          icon: buildIcon(player, isMe),
+          zIndexOffset: isMe ? 1000 : 0,
+        }).addTo(map)
       }
     })
 
@@ -264,39 +324,48 @@ export default function GameScreen() {
 
     game.powerUpSpawns.forEach(spawn => {
       if (!spawn.location) return
+      const info = POWERUP_TYPES[spawn.type]
+      // Only show power-ups the current player can actually use
+      const usable = info && (info.availableTo === role || info.availableTo === 'both')
+      if (!usable) return
       seen.add(spawn.id)
       if (!powerUpMarkersRef.current[spawn.id]) {
-        const info = POWERUP_TYPES[spawn.type]
         powerUpMarkersRef.current[spawn.id] = L.marker(
           [spawn.location.lat, spawn.location.lng],
           {
             icon: L.divIcon({
-              html: `<div style="font-size:28px;filter:drop-shadow(0 0 8px rgba(255,214,0,.7));">${info?.emoji || '⭐'}</div>`,
+              html: `<div class="map-powerup">
+                <div class="map-powerup-badge" style="border-color:${info.color};box-shadow:0 0 14px ${info.color}88;">${info?.emoji || '⭐'}</div>
+                <div class="map-powerup-label" style="color:${info.color}">${escapeHtml(info?.label || 'Power-up')}</div>
+              </div>`,
               className: '',
-              iconSize: [32, 32],
-              iconAnchor: [16, 16],
+              iconSize: [70, 56],
+              iconAnchor: [35, 28],
             }),
           }
-        ).bindTooltip(info?.label || 'Power-up', { direction: 'top' }).addTo(mapRef.current)
+        ).addTo(mapRef.current)
       }
     })
 
     Object.keys(powerUpMarkersRef.current).forEach(sid => {
       if (!seen.has(sid)) { powerUpMarkersRef.current[sid].remove(); delete powerUpMarkersRef.current[sid] }
     })
-  }, [game?.powerUpSpawns])
+  }, [game?.powerUpSpawns, role])
 
-  /* ── Auto-collect nearby power-ups ────────────────────────────────────── */
+  /* ── Auto-collect nearby power-ups (only ones my role can use) ─────────── */
   useEffect(() => {
     const myLoc = game?.players?.[uid]?.location
     if (!myLoc || !game?.powerUpSpawns) return
     game.powerUpSpawns.forEach(spawn => {
       if (!spawn.location) return
+      const info = POWERUP_TYPES[spawn.type]
+      const usable = info && (info.availableTo === role || info.availableTo === 'both')
+      if (!usable) return
       if (distanceMetres(myLoc, spawn.location) <= POWERUP_COLLECT_RADIUS_M) {
         collectPowerUp(roomCode, uid, spawn.id).catch(() => {})
       }
     })
-  }, [game?.players?.[uid]?.location])
+  }, [game?.players?.[uid]?.location, role])
 
   /* ── Host replenishes power-ups ────────────────────────────────────────── */
   useEffect(() => {
@@ -412,6 +481,29 @@ export default function GameScreen() {
       {/* ── Map (fills remaining space) ── */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+
+        {/* Recenter button */}
+        <button
+          className="map-fab"
+          style={{ right: 12, bottom: 12 }}
+          onClick={recenter}
+          aria-label="Recenter on me"
+        >
+          🎯
+        </button>
+
+        {/* Legend */}
+        <div className="map-legend" style={{ left: 12, bottom: 12 }}>
+          <div className="map-legend-row">
+            <span className="map-legend-dot" style={{ background: 'var(--blue)' }} /> You
+          </div>
+          <div className="map-legend-row">
+            <span className="map-legend-dot" style={{ background: 'var(--red)' }} /> It
+          </div>
+          <div className="map-legend-row">
+            <span className="map-legend-dot" style={{ background: 'var(--green)' }} /> Runner
+          </div>
+        </div>
 
         {/* Notification stack over map */}
         <div style={{
