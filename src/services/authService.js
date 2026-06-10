@@ -11,11 +11,14 @@ import {
   linkWithPopup,
   linkWithCredential,
   signInWithCredential,
+  signInWithPopup,
   signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
   signInAnonymously,
   signOut,
 } from 'firebase/auth'
 import { auth } from './firebase.js'
+import { ensureAuth } from './gameService.js'
 import { signInSync, deleteCloudStats } from './statsCloud.js'
 
 /* Snapshot of the current account for the UI. */
@@ -34,15 +37,29 @@ export function getAccount() {
 
 /* Google: link to the anonymous user, or sign into the existing Google account. */
 export async function signInWithGoogle() {
+  // Guarantee a user exists to link onto. Without this, auth.currentUser can be
+  // null (e.g. anonymous sign-in hasn't completed) and linkWithPopup throws
+  // auth/argument-error.
+  await ensureAuth()
+
   const provider = new GoogleAuthProvider()
   provider.setCustomParameters({ prompt: 'select_account' })
+
+  // If somehow there's still no user to link onto, sign in with Google directly.
+  if (!auth.currentUser) {
+    await signInWithPopup(auth, provider)
+    await signInSync(auth.currentUser.uid)
+    return getAccount()
+  }
+
   try {
     await linkWithPopup(auth.currentUser, provider)
   } catch (e) {
     if (e.code === 'auth/credential-already-in-use') {
+      // This Google account already exists — sign into it instead of linking.
       const cred = GoogleAuthProvider.credentialFromError(e)
       if (cred) await signInWithCredential(auth, cred)
-      else throw e
+      else await signInWithPopup(auth, provider)
     } else if (e.code === 'auth/provider-already-linked') {
       // already linked — fine
     } else {
@@ -58,13 +75,30 @@ export async function signInWithGoogle() {
  * If that email already has an account, sign into it instead.
  */
 export async function signInWithEmail(email, password) {
-  const cred = EmailAuthProvider.credential(email.trim(), password)
+  // Guarantee a user to link onto (avoids auth/argument-error on a null user).
+  await ensureAuth()
+  const addr = email.trim()
+
+  // No anonymous user to upgrade — just create/sign into the account directly.
+  if (!auth.currentUser) {
+    try {
+      await createUserWithEmailAndPassword(auth, addr, password)
+    } catch (e) {
+      if (e.code === 'auth/email-already-in-use') {
+        await signInWithEmailAndPassword(auth, addr, password)
+      } else throw e
+    }
+    await signInSync(auth.currentUser.uid)
+    return getAccount()
+  }
+
+  const cred = EmailAuthProvider.credential(addr, password)
   try {
     await linkWithCredential(auth.currentUser, cred)
   } catch (e) {
     if (e.code === 'auth/email-already-in-use' || e.code === 'auth/credential-already-in-use') {
       // Existing account — sign in (validates the password).
-      await signInWithEmailAndPassword(auth, email.trim(), password)
+      await signInWithEmailAndPassword(auth, addr, password)
     } else if (e.code === 'auth/provider-already-linked') {
       // already linked — fine
     } else {
