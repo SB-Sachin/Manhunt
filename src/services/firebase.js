@@ -1,6 +1,11 @@
 import { initializeApp } from 'firebase/app'
 import { getFirestore } from 'firebase/firestore'
-import { initializeAuth, browserLocalPersistence, indexedDBLocalPersistence } from 'firebase/auth'
+import {
+  initializeAuth,
+  browserLocalPersistence,
+  indexedDBLocalPersistence,
+  browserPopupRedirectResolver,
+} from 'firebase/auth'
 
 // Replace with your Firebase project config from https://console.firebase.google.com
 const firebaseConfig = {
@@ -17,6 +22,11 @@ export const db = getFirestore(app)
 
 // Persist the signed-in user across app close/reopen (IndexedDB, falling back to
 // localStorage). Without explicit persistence a session can be lost on relaunch.
+//
+// initializeAuth() (unlike getAuth()) does NOT wire up a popupRedirectResolver,
+// so popup/redirect sign-in (Google) throws auth/argument-error unless we pass
+// one explicitly.
 export const auth = initializeAuth(app, {
   persistence: [indexedDBLocalPersistence, browserLocalPersistence],
+  popupRedirectResolver: browserPopupRedirectResolver,
 })
