@@ -430,7 +430,17 @@ export async function addGhostPlayer(code, name, addedBy) {
 /* ── Admin controls (host only) ────────────────────────────────────────────── */
 
 export async function kickPlayer(code, playerId) {
-  await updateDoc(doc(db, 'games', code), { [`players.${playerId}`]: deleteField() })
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+    if (!game) return
+
+    const updates = { [`players.${playerId}`]: deleteField() }
+    // Removing a runner mid-game can end it (classic: one runner left wins).
+    if (game.status === 'LIVE') applyRunnerWinCheck(game, playerId, updates)
+    tx.update(ref, updates)
+  })
 }
 
 export async function renamePlayer(code, playerId, newName) {
@@ -438,10 +448,43 @@ export async function renamePlayer(code, playerId, newName) {
 }
 
 export async function reassignRole(code, playerId, newRole) {
-  await updateDoc(doc(db, 'games', code), {
-    [`players.${playerId}.role`]: newRole,
-    [`players.${playerId}.revealsLeft`]: newRole === 'it' ? 3 : 0,
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+    if (!game) return
+
+    const updates = {
+      [`players.${playerId}.role`]: newRole,
+      [`players.${playerId}.revealsLeft`]: newRole === 'it' ? 3 : 0,
+    }
+    // Making someone "It" shrinks the runner pool — may end the game.
+    if (newRole === 'it' && game.status === 'LIVE') {
+      applyRunnerWinCheck(game, playerId, updates)
+    }
+    tx.update(ref, updates)
   })
+}
+
+/*
+ * Shared end-of-game check for actions that remove a runner from play
+ * (eliminate via admin, kick, force-make-It). `excludeId` is the player who is
+ * no longer an active runner. Mutates `updates` with status/winner if the game
+ * should end. Classic: last remaining runner wins. Survival/none-left: ends with
+ * no winner (the explicit tag/elimination paths handle survival winners).
+ */
+function applyRunnerWinCheck(game, excludeId, updates) {
+  const survival = game.mode === 'survival'
+  const remaining = Object.values(game.players).filter(
+    p => p.id !== excludeId && p.role === 'runner' && !p.isEliminated
+  )
+  if (!survival && remaining.length === 1) {
+    updates.status = 'GAME_OVER'
+    updates.winner = remaining[0].id
+  } else if (remaining.length === 0) {
+    updates.status = 'GAME_OVER'
+    updates.winner = null
+  }
 }
 
 export async function eliminatePlayer(code, playerId) {
