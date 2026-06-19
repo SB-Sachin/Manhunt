@@ -86,6 +86,13 @@ export default function GameScreen() {
       // ── Diff for notifications ──────────────────────────────────────────
 
       if (prev) {
+        // Late joiner — a player appeared who wasn't here before
+        Object.values(g.players).forEach(p => {
+          if (!prev.players?.[p.id] && p.id !== uid) {
+            pushNotification(`👋 ${p.name} joined as a runner`, 'success')
+          }
+        })
+
         // Someone just got tagged → both sides get a notification
         const prevTag = prev.tagRequest
         const newTag = g.tagRequest
