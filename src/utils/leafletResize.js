@@ -23,10 +23,11 @@ export function attachAutoResize(map, container, isAlive = () => true) {
   }
   const schedule = () => { if (!raf) raf = requestAnimationFrame(run) }
 
-  // Initial settle passes (mount, fonts/tiles, late layout)
+  // Initial settle passes. Several deferred attempts cover slow layout, late
+  // tile loads, tiled/resized windows, and late-join/reload timing where a
+  // single early measure lands while the container is still 0-sized.
   schedule()
-  const t1 = setTimeout(schedule, 200)
-  const t2 = setTimeout(schedule, 600)
+  const timers = [120, 350, 700, 1200, 2000].map(ms => setTimeout(schedule, ms))
 
   let observer = null
   if (typeof ResizeObserver !== 'undefined') {
@@ -43,10 +44,17 @@ export function attachAutoResize(map, container, isAlive = () => true) {
     observer.observe(container)
   }
 
+  // Window-level changes the container observer can miss (rotation, tab return)
+  window.addEventListener('resize', schedule)
+  window.addEventListener('orientationchange', schedule)
+  document.addEventListener('visibilitychange', schedule)
+
   return () => {
     if (raf) cancelAnimationFrame(raf)
-    clearTimeout(t1)
-    clearTimeout(t2)
+    timers.forEach(clearTimeout)
     observer?.disconnect()
+    window.removeEventListener('resize', schedule)
+    window.removeEventListener('orientationchange', schedule)
+    document.removeEventListener('visibilitychange', schedule)
   }
 }
