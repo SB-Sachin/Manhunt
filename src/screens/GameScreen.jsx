@@ -11,6 +11,7 @@ import { distanceMetres, computeClusters, pointInPolygon, shrinkPolygon } from '
 import { POWERUP_TYPES, getActiveEffect, isImmune } from '../utils/powerups.js'
 import { feedback } from '../utils/feedback.js'
 import { attachAutoResize } from '../utils/leafletResize.js'
+import { addBaseTiles } from '../utils/mapTiles.js'
 import AdminSheet from '../components/AdminSheet.jsx'
 import SoundToggle from '../components/SoundToggle.jsx'
 
@@ -207,11 +208,8 @@ export default function GameScreen() {
       }).setView([37.7749, -122.4194], 17)
       map.zoomControl.setPosition('topright')
 
-      // Carto Voyager — far clearer streets/labels than raw OSM tiles
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        maxZoom: 20,
-        subdomains: 'abcd',
-      }).addTo(map)
+      // Carto Voyager tiles, auto-falling back to OSM if the CDN is blocked
+      addBaseTiles(L, map)
 
       mapRef.current = map
 

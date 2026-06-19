@@ -4,6 +4,7 @@ import { useGameStore, selectIsHost, selectAllPlayers } from '../store/gameStore
 import { subscribeToGame, setBoundary, setItPlayers, startDispersal } from '../services/gameService.js'
 import { usePresence } from '../hooks/useLocation.js'
 import { attachAutoResize } from '../utils/leafletResize.js'
+import { addBaseTiles } from '../utils/mapTiles.js'
 
 export default function SetupScreen() {
   const navigate = useNavigate()
@@ -54,10 +55,7 @@ export default function SetupScreen() {
         tapTolerance: 15,
       }).setView([37.7749, -122.4194], 16)
 
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        maxZoom: 20,
-        subdomains: 'abcd',
-      }).addTo(map)
+      addBaseTiles(L, map)
 
       navigator.geolocation.getCurrentPosition(pos => {
         map.setView([pos.coords.latitude, pos.coords.longitude], 17)

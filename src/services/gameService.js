@@ -121,7 +121,7 @@ export async function heartbeat(code, uid) {
   } catch { /* player may have been removed; ignore */ }
 }
 
-const HOST_STALE_MS = 45000
+export const HOST_STALE_MS = 45000
 
 /* If the current host hasn't been seen in HOST_STALE_MS, promote the
    earliest-joined active non-ghost player. Safe under concurrency (transaction).
@@ -529,17 +529,25 @@ export async function forceEndGame(code, winnerId = null) {
  * roles, eliminations, tags, power-ups, and timers. Triggered by the host; the
  * status flip to LOBBY navigates everyone back automatically.
  */
-export async function resetGameToLobby(code) {
+export async function resetGameToLobby(code, claimerUid = null) {
   await runTransaction(db, async (tx) => {
     const ref = doc(db, 'games', code)
     const snap = await tx.get(ref)
     const game = snap.data()
     if (!game) return
 
+    // If the host has gone (left or stale heartbeat), the player starting the
+    // rematch becomes the new host so the game isn't stuck without an owner.
+    const host = game.players?.[game.hostId]
+    const hostGone = !host || (Date.now() - (host.lastSeen || host.joinedAt || 0) > HOST_STALE_MS)
+    let hostId = game.hostId
+    if (hostGone && claimerUid && game.players?.[claimerUid]) hostId = claimerUid
+
     const players = {}
     Object.values(game.players || {}).forEach(p => {
       players[p.id] = {
-        ...p,                 // keep id, name, isHost, isGhost, addedBy, joinedAt
+        ...p,                 // keep id, name, isGhost, addedBy, joinedAt
+        isHost: p.id === hostId,
         role: 'runner',
         isEliminated: false,
         eliminatedAt: null,
@@ -552,6 +560,7 @@ export async function resetGameToLobby(code) {
 
     tx.update(ref, {
       players,
+      hostId,
       status: 'LOBBY',
       winner: null,
       tagRequest: null,

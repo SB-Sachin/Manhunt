@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectAllPlayers, selectIsHost } from '../store/gameStore.js'
-import { subscribeToGame, resetGameToLobby } from '../services/gameService.js'
+import { subscribeToGame, resetGameToLobby, HOST_STALE_MS } from '../services/gameService.js'
 import { recordGameResult, ACHIEVEMENTS } from '../utils/stats.js'
 import { recordGameToCloud } from '../services/statsCloud.js'
 import { getAccount } from '../services/authService.js'
+import { usePresence } from '../hooks/useLocation.js'
 
 const CONFETTI_COLORS = ['#ff3b3b', '#00e676', '#448aff', '#ffd600', '#d500f9', '#ff9100']
 
@@ -17,6 +18,10 @@ export default function GameOverScreen() {
   const [unlocked, setUnlocked] = useState([])
   const [rematchBusy, setRematchBusy] = useState(false)
   const recordedRef = useRef(false)
+
+  // Keep heartbeating at game over so a vanished host can be detected and any
+  // remaining player can take over the rematch.
+  usePresence(roomCode, uid)
 
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
@@ -32,9 +37,16 @@ export default function GameOverScreen() {
 
   async function handleRematch() {
     setRematchBusy(true)
-    try { await resetGameToLobby(roomCode) } catch { setRematchBusy(false) }
+    // Pass our uid so we claim host if the original host has left.
+    try { await resetGameToLobby(roomCode, uid) } catch { setRematchBusy(false) }
     // Navigation happens via the LOBBY status update above.
   }
+
+  // Has the host left/gone stale? Then a remaining player may start the rematch.
+  const hostPlayer = game?.players?.[game?.hostId]
+  const hostGone = !!game && (!hostPlayer ||
+    Date.now() - (hostPlayer.lastSeen || hostPlayer.joinedAt || 0) > HOST_STALE_MS)
+  const canRematch = isHost || hostGone
 
   const winner = game?.winner ? game.players?.[game.winner] : null
   const isWinner = game?.winner === uid
@@ -227,11 +239,11 @@ export default function GameOverScreen() {
 
       {/* Rematch / leave */}
       <div style={{ marginTop: 'auto', position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {isHost ? (
+        {canRematch ? (
           <button className="btn btn-primary" onClick={handleRematch} disabled={rematchBusy}>
             {rematchBusy
               ? <span className="spinner" style={{ width: 20, height: 20, borderWidth: 2 }} />
-              : '🔄 Play Again — same group'}
+              : isHost ? '🔄 Play Again — same group' : '🔄 Play Again (you’ll host)'}
           </button>
         ) : (
           <div className="card" style={{ textAlign: 'center', padding: '16px' }}>
