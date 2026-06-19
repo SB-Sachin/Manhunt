@@ -67,7 +67,7 @@ export default function LobbyScreen() {
   const enoughPlayers = realPlayers.length >= 2
 
   return (
-    <div className="screen screen-padded">
+    <div className="screen screen-padded" style={{ flexShrink: 0 }}>
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start' }}>
@@ -98,8 +98,9 @@ export default function LobbyScreen() {
 
       <div className="divider" />
 
-      {/* Player list */}
-      <div className="card" style={{ flex: 1, overflowY: 'auto' }}>
+      {/* Player list — full height so the host sees everyone; the whole
+          screen scrolls rather than squishing this into a tiny scroll box. */}
+      <div className="card" style={{ flexShrink: 0 }}>
         <div className="label" style={{ marginBottom: 4 }}>
           Players — {players.length} joined
         </div>
@@ -168,7 +169,7 @@ export default function LobbyScreen() {
 
       {/* Game mode (host) — syncs to all players */}
       {isHost && (
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10, flexShrink: 0 }}>
           <div className="label" style={{ marginBottom: 0 }}>🎮 Game mode</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button
@@ -228,7 +229,7 @@ export default function LobbyScreen() {
 
       {/* Dispersal timer (host) — syncs to all players */}
       {isHost && (
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10, flexShrink: 0 }}>
           <div className="label" style={{ marginBottom: 0 }}>
             ⏱ Dispersal timer — {formatDuration(game?.dispersalSecs)}
           </div>
