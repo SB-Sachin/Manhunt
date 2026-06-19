@@ -29,6 +29,7 @@ export default function SetupScreen() {
       setGame(g)
       if (g.status === 'DISPERSAL') navigate('/dispersal')
       if (g.status === 'LIVE') navigate('/game')
+      if (g.status === 'GAME_OVER') navigate('/gameover')
     })
     return unsub
   }, [roomCode])

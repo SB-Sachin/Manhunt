@@ -20,7 +20,7 @@ export default function JoinRoom() {
   const setSession = useGameStore(s => s.setSession)
   const persistedName = useGameStore(s => s.displayName)
 
-  const [phase, setPhase] = useState('checking')   // checking | join | started | notfound | error
+  const [phase, setPhase] = useState('checking')   // checking | join | ended | notfound | error
   const [name, setName] = useState(persistedName || '')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -40,7 +40,8 @@ export default function JoinRoom() {
           navigate('/lobby', { replace: true })
           return
         }
-        if (game.status !== 'LOBBY') { setPhase('started'); return }
+        if (game.status === 'GAME_OVER') { setPhase('ended'); return }
+        // LOBBY or mid-game — late joiners come in as a runner.
         setPhase('join')
       } catch {
         if (!cancelled) setPhase('error')
@@ -73,11 +74,11 @@ export default function JoinRoom() {
     )
   }
 
-  if (phase === 'notfound' || phase === 'started' || phase === 'error') {
+  if (phase === 'notfound' || phase === 'ended' || phase === 'error') {
     const msg = phase === 'notfound'
       ? "That game doesn't exist anymore."
-      : phase === 'started'
-        ? 'This game has already started — ask the host for a fresh link.'
+      : phase === 'ended'
+        ? 'This game has already finished — ask the host for a fresh link.'
         : 'Something went wrong. Try again.'
     return (
       <div className="screen screen-padded" style={{ justifyContent: 'center', alignItems: 'center', gap: 18, textAlign: 'center' }}>

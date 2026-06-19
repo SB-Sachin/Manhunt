@@ -41,6 +41,7 @@ export default function LobbyScreen() {
       if (g.status === 'SELECTING_IT') navigate('/setup')
       if (g.status === 'DISPERSAL') navigate('/dispersal')
       if (g.status === 'LIVE') navigate('/game')
+      if (g.status === 'GAME_OVER') navigate('/gameover')
     })
     return unsub
   }, [roomCode])

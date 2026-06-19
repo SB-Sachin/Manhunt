@@ -9,13 +9,17 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.resource.data.hostId == request.auth.uid;
 
-      // Update: allow joining a LOBBY game, or any existing player updating during play
+      // Update: allow joining any game that hasn't ended, or any existing player
+      // updating during play
       allow update: if request.auth != null
         && (
-          // Joining: game is in LOBBY and user is only adding themselves to players
-          (resource.data.status == 'LOBBY'
+          // Joining (lobby OR late, mid-game) — only add yourself to players,
+          // don't remove anyone, don't touch other fields, game not over.
+          (resource.data.status != 'GAME_OVER'
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
-            && request.resource.data.players.keys().hasAll(resource.data.players.keys()))
+            && request.resource.data.players.keys().hasAll(resource.data.players.keys())
+            && !(request.auth.uid in resource.data.players)
+            && request.resource.data.players[request.auth.uid].id == request.auth.uid)
           ||
           // In-game: user is already a player
           request.auth.uid in resource.data.players

@@ -82,8 +82,9 @@ export async function joinGame(code, playerName) {
 
   if (!snap.exists()) throw new Error('Game not found')
   const game = snap.data()
-  if (game.status !== 'LOBBY') throw new Error('Game already started')
+  if (game.status === 'GAME_OVER') throw new Error('This game has already ended')
 
+  // Late joiners (mid-game) come in as an active runner.
   const player = {
     id: user.uid,
     name: playerName,
