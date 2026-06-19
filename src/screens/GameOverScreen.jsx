@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useGameStore, selectAllPlayers } from '../store/gameStore.js'
-import { subscribeToGame } from '../services/gameService.js'
+import { useGameStore, selectAllPlayers, selectIsHost } from '../store/gameStore.js'
+import { subscribeToGame, resetGameToLobby } from '../services/gameService.js'
 import { recordGameResult, ACHIEVEMENTS } from '../utils/stats.js'
 import { recordGameToCloud } from '../services/statsCloud.js'
 import { getAccount } from '../services/authService.js'
@@ -12,15 +12,29 @@ export default function GameOverScreen() {
   const navigate = useNavigate()
   const { roomCode, uid, setGame, game } = useGameStore()
   const players = useGameStore(selectAllPlayers)
+  const isHost = useGameStore(selectIsHost)
   const clearSession = useGameStore(s => s.clearSession)
   const [unlocked, setUnlocked] = useState([])
+  const [rematchBusy, setRematchBusy] = useState(false)
   const recordedRef = useRef(false)
 
   useEffect(() => {
     if (!roomCode) { navigate('/'); return }
-    const unsub = subscribeToGame(roomCode, setGame)
+    const unsub = subscribeToGame(roomCode, (g) => {
+      setGame(g)
+      // Host started a rematch — everyone goes back to the same lobby.
+      if (g.status === 'LOBBY') navigate('/lobby')
+      if (g.status === 'DISPERSAL') navigate('/dispersal')
+      if (g.status === 'LIVE') navigate('/game')
+    })
     return unsub
   }, [roomCode])
+
+  async function handleRematch() {
+    setRematchBusy(true)
+    try { await resetGameToLobby(roomCode) } catch { setRematchBusy(false) }
+    // Navigation happens via the LOBBY status update above.
+  }
 
   const winner = game?.winner ? game.players?.[game.winner] : null
   const isWinner = game?.winner === uid
@@ -55,7 +69,8 @@ export default function GameOverScreen() {
     }
 
     const result = {
-      gameCode: roomCode,
+      // Unique per game instance, so rematches in the same room each count
+      gameCode: `${roomCode}-${liveStartMs ?? game.liveStartedAt ?? ''}`,
       mode: game.mode || 'classic',
       role: me.role,
       won: isWinner,
@@ -210,13 +225,25 @@ export default function GameOverScreen() {
         })}
       </div>
 
-      <button
-        className="btn btn-primary"
-        style={{ marginTop: 'auto', position: 'relative', zIndex: 2 }}
-        onClick={() => { clearSession(); navigate('/') }}
-      >
-        Play Again
-      </button>
+      {/* Rematch / leave */}
+      <div style={{ marginTop: 'auto', position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {isHost ? (
+          <button className="btn btn-primary" onClick={handleRematch} disabled={rematchBusy}>
+            {rematchBusy
+              ? <span className="spinner" style={{ width: 20, height: 20, borderWidth: 2 }} />
+              : '🔄 Play Again — same group'}
+          </button>
+        ) : (
+          <div className="card" style={{ textAlign: 'center', padding: '16px' }}>
+            <div className="pulse" style={{ color: 'var(--text-muted)', fontSize: 14 }}>
+              Waiting for host to start a rematch…
+            </div>
+          </div>
+        )}
+        <button className="btn btn-ghost" onClick={() => { clearSession(); navigate('/') }}>
+          Leave Game
+        </button>
+      </div>
     </div>
   )
 }

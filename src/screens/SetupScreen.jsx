@@ -12,7 +12,8 @@ export default function SetupScreen() {
 
   usePresence(roomCode, uid)
 
-  const [step, setStep] = useState('boundary')
+  // If a boundary already exists (e.g. a rematch), skip straight to picking "It".
+  const [step, setStep] = useState(() => (game?.boundary?.length >= 3 ? 'select_it' : 'boundary'))
   const [selectedIt, setSelectedIt] = useState([])
   const [points, setPoints] = useState([])
   const [randomCount, setRandomCount] = useState(1)
@@ -244,9 +245,18 @@ export default function SetupScreen() {
 
   return (
     <div className="screen screen-padded">
-      <div>
-        <div className="title" style={{ fontSize: 22 }}>Select "It" Players</div>
-        <div className="subtitle" style={{ marginTop: 4 }}>Tap to toggle a player's role</div>
+      <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1 }}>
+          <div className="title" style={{ fontSize: 22 }}>Select "It" Players</div>
+          <div className="subtitle" style={{ marginTop: 4 }}>Tap to toggle a player's role</div>
+        </div>
+        <button
+          className="btn-pill"
+          style={{ marginTop: 4 }}
+          onClick={() => { setPoints([]); setStep('boundary') }}
+        >
+          ✏️ Redraw zone
+        </button>
       </div>
 
       <div style={{ display: 'flex', gap: 8 }}>

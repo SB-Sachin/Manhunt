@@ -480,6 +480,53 @@ export async function forceEndGame(code, winnerId = null) {
   })
 }
 
+/*
+ * Rematch — reset the game back to its lobby for a chained game. Keeps the same
+ * players, room code, and settings (mode, timers, boundary, danger sense); wipes
+ * roles, eliminations, tags, power-ups, and timers. Triggered by the host; the
+ * status flip to LOBBY navigates everyone back automatically.
+ */
+export async function resetGameToLobby(code) {
+  await runTransaction(db, async (tx) => {
+    const ref = doc(db, 'games', code)
+    const snap = await tx.get(ref)
+    const game = snap.data()
+    if (!game) return
+
+    const players = {}
+    Object.values(game.players || {}).forEach(p => {
+      players[p.id] = {
+        ...p,                 // keep id, name, isHost, isGhost, addedBy, joinedAt
+        role: 'runner',
+        isEliminated: false,
+        eliminatedAt: null,
+        location: null,
+        tagCount: 0,
+        powerUps: [],
+        revealsLeft: 0,
+      }
+    })
+
+    tx.update(ref, {
+      players,
+      status: 'LOBBY',
+      winner: null,
+      tagRequest: null,
+      activeEffects: [],
+      powerUpSpawns: [],
+      dispersalStartedAt: null,
+      dispersalEndsAt: null,
+      dispersalPausedAt: null,
+      liveStartedAt: null,
+      liveEndsAt: null,
+      shrinkStartAt: null,
+      shrinkDurationSecs: null,
+      maxShrink: 0,
+      // Preserved: boundary, mode, roundSecs, dispersalSecs, proximityWarnings
+    })
+  })
+}
+
 /* ── Dispersal pause / resume (host only) ──────────────────────────────────── */
 
 export async function pauseDispersal(code) {
