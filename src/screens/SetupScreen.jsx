@@ -15,6 +15,7 @@ export default function SetupScreen() {
   const [step, setStep] = useState('boundary')
   const [selectedIt, setSelectedIt] = useState([])
   const [points, setPoints] = useState([])
+  const [randomCount, setRandomCount] = useState(1)
 
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
@@ -128,6 +129,18 @@ export default function SetupScreen() {
 
   function toggleIt(id) {
     setSelectedIt(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  }
+
+  // Randomly pick `randomCount` "It" players (ghosts can't tag, so exclude them)
+  function randomizeIt() {
+    const eligible = players.filter(p => !p.isGhost)
+    const n = Math.min(randomCount, eligible.length)
+    const pool = [...eligible]
+    for (let i = pool.length - 1; i > 0; i--) {       // Fisher–Yates shuffle
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[pool[i], pool[j]] = [pool[j], pool[i]]
+    }
+    setSelectedIt(pool.slice(0, n).map(p => p.id))
   }
 
   async function launchGame() {
@@ -244,6 +257,33 @@ export default function SetupScreen() {
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 28, color: 'var(--green)' }}>{runnerCount}</div>
           <div className="label" style={{ marginBottom: 0, color: 'var(--green)' }}>Runners</div>
         </div>
+      </div>
+
+      {/* Randomize It */}
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px' }}>
+        <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Random It:</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            className="btn-pill"
+            style={{ minWidth: 36, padding: '6px 0' }}
+            onClick={() => setRandomCount(c => Math.max(1, c - 1))}
+          >−</button>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: 18, minWidth: 18, textAlign: 'center' }}>
+            {randomCount}
+          </span>
+          <button
+            className="btn-pill"
+            style={{ minWidth: 36, padding: '6px 0' }}
+            onClick={() => setRandomCount(c => Math.min(players.length - 1, c + 1))}
+          >+</button>
+        </div>
+        <button
+          className="btn btn-secondary"
+          style={{ flex: 1, minHeight: 42, marginLeft: 'auto' }}
+          onClick={randomizeIt}
+        >
+          🎲 Randomize
+        </button>
       </div>
 
       <div className="card" style={{ flex: 1, overflowY: 'auto' }}>

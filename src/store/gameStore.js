@@ -70,15 +70,27 @@ export const selectMyRole = (state) =>
 export const selectIsHost = (state) =>
   state.game?.hostId === state.uid
 
+// Stable ordering — join time, then id as a tiebreaker. Without this the list
+// re-shuffles on every GPS/location write, making players impossible to tap.
+function byJoinOrder(a, b) {
+  const ja = a.joinedAt ?? 0
+  const jb = b.joinedAt ?? 0
+  if (ja !== jb) return ja - jb
+  return String(a.id).localeCompare(String(b.id))
+}
+
+const sortedPlayers = (state) =>
+  Object.values(state.game?.players ?? {}).sort(byJoinOrder)
+
 export const selectRunners = (state) =>
-  Object.values(state.game?.players ?? {}).filter(p => p.role === 'runner' && !p.isEliminated)
+  sortedPlayers(state).filter(p => p.role === 'runner' && !p.isEliminated)
 
 export const selectItPlayers = (state) =>
-  Object.values(state.game?.players ?? {}).filter(p => p.role === 'it')
+  sortedPlayers(state).filter(p => p.role === 'it')
 
 export const selectAllPlayers = (state) =>
-  Object.values(state.game?.players ?? {})
+  sortedPlayers(state)
 
 // Real (phone-carrying) players only — excludes honor-system ghosts
 export const selectRealPlayers = (state) =>
-  Object.values(state.game?.players ?? {}).filter(p => !p.isGhost)
+  sortedPlayers(state).filter(p => !p.isGhost)

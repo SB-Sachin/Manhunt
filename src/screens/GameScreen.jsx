@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useGameStore, selectMyRole, selectItPlayers, selectRunners, selectIsHost } from '../store/gameStore.js'
+import { useGameStore, selectMyRole, selectItPlayers, selectRunners, selectIsHost, selectAllPlayers } from '../store/gameStore.js'
 import {
   subscribeToGame, tagPlayer, confirmTag, disputeTag,
   collectPowerUp, activatePowerUp, useReveal, replenishPowerUps,
@@ -44,7 +44,7 @@ export default function GameScreen() {
   const itPlayers = useGameStore(selectItPlayers)
   const runners = useGameStore(selectRunners)
   const isHost = useGameStore(selectIsHost)
-  const allPlayers = Object.values(game?.players ?? {})
+  const allPlayers = useGameStore(selectAllPlayers)   // stably ordered
 
   const [tagRequest, setTagRequest] = useState(null)
   const [tagCountdown, setTagCountdown] = useState(5)
