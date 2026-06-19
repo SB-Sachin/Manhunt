@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { createGame, joinGame } from '../services/gameService.js'
 import { useGameStore } from '../store/gameStore.js'
 import { getAccount } from '../services/authService.js'
-import { requestLocationPermission } from '../hooks/useLocation.js'
+import { requestLocationPermission, locationErrorMessage } from '../hooks/useLocation.js'
 import { primeAudio } from '../utils/sound.js'
 import SoundToggle from '../components/SoundToggle.jsx'
 
@@ -11,6 +11,7 @@ export default function HomeScreen() {
   const navigate = useNavigate()
   const setSession = useGameStore(s => s.setSession)
   const savedName = useGameStore(s => s.displayName)
+  const activeRoom = useGameStore(s => s.roomCode)   // a game already in progress?
   // Suggest the account name (Google) or the last-used name so logged-in players
   // don't retype it every game.
   const [name, setName] = useState(() => getAccount().displayName || savedName || '')
@@ -24,7 +25,7 @@ export default function HomeScreen() {
     if (!name.trim()) return setError('Enter your name')
     setLoading(true); setError('')
     try {
-      await requestLocationPermission()
+      await requestLocationPermission().catch(e => { throw new Error(locationErrorMessage(e)) })
       const { code, uid } = await createGame(name.trim(), dispersalMins * 60)
       setSession(uid, name.trim(), code)
       navigate('/lobby')
@@ -37,7 +38,7 @@ export default function HomeScreen() {
     if (!code.trim()) return setError('Enter a room code')
     setLoading(true); setError('')
     try {
-      await requestLocationPermission()
+      await requestLocationPermission().catch(e => { throw new Error(locationErrorMessage(e)) })
       const result = await joinGame(code.trim(), name.trim())
       setSession(result.uid, name.trim(), result.code)
       navigate('/lobby')
@@ -85,6 +86,17 @@ export default function HomeScreen() {
           Real-world GPS chase game
         </div>
       </div>
+
+      {/* Resume an in-progress game (session survived a reload / navigation home) */}
+      {activeRoom && (
+        <button
+          className="btn btn-green"
+          onClick={() => navigate('/lobby')}
+          style={{ animation: 'pulse 2.4s ease-in-out infinite' }}
+        >
+          ↩ Rejoin your game — {activeRoom}
+        </button>
+      )}
 
       {/* Mode selector */}
       <div style={{ display: 'flex', gap: 8 }}>

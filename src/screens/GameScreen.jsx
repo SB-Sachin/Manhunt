@@ -74,7 +74,7 @@ export default function GameScreen() {
   // Track previous game state for diffing (notifications)
   const prevGameRef = useRef(null)
 
-  useLocationTracking(roomCode, uid, true)
+  const { status: locStatus } = useLocationTracking(roomCode, uid, true)
   usePresence(roomCode, uid)
 
   /* ── Firestore subscription ────────────────────────────────────────────── */
@@ -596,6 +596,18 @@ export default function GameScreen() {
           </span>
         )}
       </div>
+
+      {/* Location-unavailable banner — you're invisible on the map without it */}
+      {locStatus === 'error' && (
+        <div style={{
+          flexShrink: 0,
+          background: 'var(--yellow)', color: '#000',
+          fontFamily: 'var(--font-body)', fontWeight: 600, fontSize: 12,
+          textAlign: 'center', padding: '7px 12px',
+        }}>
+          ⚠ Location is off — enable GPS/permission so you appear on the map
+        </div>
+      )}
 
       {/* ── Map (fills remaining space) ── */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>

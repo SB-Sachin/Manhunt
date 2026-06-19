@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useGameStore } from '../store/gameStore.js'
 import { lookupGame, joinGame } from '../services/gameService.js'
-import { requestLocationPermission } from '../hooks/useLocation.js'
+import { requestLocationPermission, locationErrorMessage } from '../hooks/useLocation.js'
 
 /*
  * Per-game shareable link: /g/:code
@@ -54,7 +54,7 @@ export default function JoinRoom() {
     if (!name.trim()) return setError('Enter your name')
     setLoading(true); setError('')
     try {
-      await requestLocationPermission()
+      await requestLocationPermission().catch(e => { throw new Error(locationErrorMessage(e)) })
       const result = await joinGame(code, name.trim())
       setSession(result.uid, name.trim(), result.code)
       navigate('/lobby', { replace: true })
