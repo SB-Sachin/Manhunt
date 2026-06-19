@@ -10,6 +10,7 @@ import { useLocationTracking, usePresence } from '../hooks/useLocation.js'
 import { distanceMetres, computeClusters, pointInPolygon, shrinkPolygon } from '../utils/geo.js'
 import { POWERUP_TYPES, getActiveEffect, isImmune } from '../utils/powerups.js'
 import { feedback } from '../utils/feedback.js'
+import { attachAutoResize } from '../utils/leafletResize.js'
 import AdminSheet from '../components/AdminSheet.jsx'
 import SoundToggle from '../components/SoundToggle.jsx'
 
@@ -191,7 +192,7 @@ export default function GameScreen() {
   /* ── Init Leaflet map ──────────────────────────────────────────────────── */
   useEffect(() => {
     if (mapRef.current) return
-    let resizeObserver = null
+    let detachResize = null
 
     import('leaflet').then((L) => {
       LRef.current = L
@@ -214,22 +215,13 @@ export default function GameScreen() {
 
       mapRef.current = map
 
-      // FIX: container is laid out by flexbox, so it often has zero size at
-      // init → grey/blank map. Force Leaflet to re-measure once mounted, and
-      // again on any container resize (keyboard, rotation, sheet open/close).
-      const refresh = () => map.invalidateSize()
-      requestAnimationFrame(refresh)
-      setTimeout(refresh, 200)
-      setTimeout(refresh, 600)
-
-      if ('ResizeObserver' in window) {
-        resizeObserver = new ResizeObserver(refresh)
-        resizeObserver.observe(container)
-      }
+      // Loop-safe re-measure: fixes the blank flexbox map without the
+      // ResizeObserver→invalidateSize feedback loop that could freeze the tab.
+      detachResize = attachAutoResize(map, container, () => mapRef.current === map)
     })
 
     return () => {
-      resizeObserver?.disconnect()
+      detachResize?.()
       mapRef.current?.remove()
       mapRef.current = null
       markersRef.current = {}

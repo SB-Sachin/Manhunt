@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { useGameStore, selectIsHost, selectAllPlayers } from '../store/gameStore.js'
 import { subscribeToGame, setBoundary, setItPlayers, startDispersal } from '../services/gameService.js'
 import { usePresence } from '../hooks/useLocation.js'
+import { attachAutoResize } from '../utils/leafletResize.js'
 
 export default function SetupScreen() {
   const navigate = useNavigate()
-  const { roomCode, uid, setGame } = useGameStore()
+  const { roomCode, uid, setGame, game } = useGameStore()
   const isHost = useGameStore(selectIsHost)
   const players = useGameStore(selectAllPlayers)
 
@@ -39,7 +40,7 @@ export default function SetupScreen() {
   useEffect(() => {
     if (!isHost || step !== 'boundary') return
     if (mapRef.current) return
-    let resizeObserver = null
+    let detachResize = null
 
     import('leaflet').then((L) => {
       LRef.current = L
@@ -68,19 +69,12 @@ export default function SetupScreen() {
 
       mapRef.current = map
 
-      // Fix blank-map-in-flexbox: re-measure after mount + on resize
-      const refresh = () => map.invalidateSize()
-      requestAnimationFrame(refresh)
-      setTimeout(refresh, 200)
-      setTimeout(refresh, 600)
-      if ('ResizeObserver' in window) {
-        resizeObserver = new ResizeObserver(refresh)
-        resizeObserver.observe(container)
-      }
+      // Loop-safe re-measure (fixes blank map without freezing the tab)
+      detachResize = attachAutoResize(map, container, () => mapRef.current === map)
     })
 
     return () => {
-      resizeObserver?.disconnect()
+      detachResize?.()
       if (mapRef.current) { mapRef.current.remove(); mapRef.current = null }
       dotMarkersRef.current = []
       polylineRef.current = null
